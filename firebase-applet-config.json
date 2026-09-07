@@ -1,0 +1,11 @@
+{
+  "projectId": "badmintonsessionmanager",
+  "appId": "1:976049980290:web:4d1dd3ef73860f47edc59b",
+  "apiKey": "AIzaSyDuwNe-pgaviVIaO9EodbzPXd6FKXjpvhs",
+  "authDomain": "badmintonsessionmanager.firebaseapp.com",
+  "firestoreDatabaseId": "(default)",
+  "storageBucket": "badmintonsessionmanager.firebasestorage.app",
+  "messagingSenderId": "976049980290",
+  "measurementId": "G-QW9DG508YZ",
+  "databaseURL": "https://badmintonsessionmanager-default-rtdb.europe-west1.firebasedatabase.app"
+}

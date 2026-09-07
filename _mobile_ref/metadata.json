@@ -1,0 +1,6 @@
+{
+  "name": "Badminton Session Manager",
+  "description": "Manage badminton sessions, player rotation, court allocation, score recording, and performance tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

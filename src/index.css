@@ -1,0 +1,518 @@
+@import "tailwindcss";
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* -------------------------------------------------------------
+   LIGHT MODE COLOUR SCHEME & VISUAL HIERARCHY
+   Directly conforms to user-specified mapping:
+   - Page: #f8fafc Slate 50
+   - Cards / Courts: #ffffff White + subtle border/shadow
+   - Nested sections: #f8fafc Slate 50
+   - Table headers / secondary surfaces: #f1f5f9 Slate 100
+   - Primary text: #020617 Slate 950
+   - Primary actions: #0284c7 Sky 600
+
+   Dark Mode is strictly preserved without any changes.
+   ------------------------------------------------------------- */
+html:not(.dark),
+html.light {
+  color-scheme: light;
+}
+
+/* Page Layer: #f8fafc Slate 50, Primary text: #020617 Slate 950 */
+html:not(.dark) body,
+html.light body {
+  background-color: #f8fafc !important;
+  color: #020617;
+}
+
+/* 1. Cards / Courts / Primary Surfaces:
+   Dark mode `bg-slate-900` -> Light mode `bg-white` (#ffffff) + subtle border/shadow */
+html:not(.dark) .bg-slate-900,
+html:not(.dark) .bg-slate-900\/95,
+html:not(.dark) .bg-slate-900\/90,
+html:not(.dark) .bg-slate-900\/80,
+html:not(.dark) .bg-slate-900\/70,
+html:not(.dark) .bg-slate-900\/60,
+html:not(.dark) .bg-slate-900\/50,
+html:not(.dark) .bg-slate-900\/40,
+html:not(.dark) [class*="bg-slate-900"],
+html.light .bg-slate-900,
+html.light .bg-slate-900\/95,
+html.light .bg-slate-900\/90,
+html.light .bg-slate-900\/80,
+html.light .bg-slate-900\/70,
+html.light .bg-slate-900\/60,
+html.light .bg-slate-900\/50,
+html.light .bg-slate-900\/40,
+html.light [class*="bg-slate-900"] {
+  background-color: #ffffff !important;
+  border-color: #e2e8f0 !important;
+  color: #020617;
+  box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.05), 0 1px 2px -1px rgb(0 0 0 / 0.04);
+}
+
+/* 2. Nested sections & Wells:
+   Dark mode `bg-slate-950` -> Light mode `bg-slate-50` (#f8fafc) */
+html:not(.dark) .bg-slate-950,
+html:not(.dark) .bg-slate-950\/95,
+html:not(.dark) .bg-slate-950\/90,
+html:not(.dark) .bg-slate-950\/85,
+html:not(.dark) .bg-slate-950\/80,
+html:not(.dark) .bg-slate-950\/70,
+html:not(.dark) .bg-slate-950\/60,
+html:not(.dark) .bg-slate-950\/50,
+html:not(.dark) .bg-slate-950\/40,
+html:not(.dark) .bg-slate-950\/30,
+html:not(.dark) .bg-slate-950\/20,
+html:not(.dark) [class*="bg-slate-950"],
+html.light .bg-slate-950,
+html.light .bg-slate-950\/95,
+html.light .bg-slate-950\/90,
+html.light .bg-slate-950\/85,
+html.light .bg-slate-950\/80,
+html.light .bg-slate-950\/70,
+html.light .bg-slate-950\/60,
+html.light .bg-slate-950\/50,
+html.light .bg-slate-950\/40,
+html.light .bg-slate-950\/30,
+html.light .bg-slate-950\/20,
+html.light [class*="bg-slate-950"] {
+  background-color: #f8fafc !important;
+  border-color: #e2e8f0 !important;
+}
+
+/* 3. Table headers & Stronger secondary surfaces / Chips / Pills:
+   Dark mode `bg-slate-800` -> Light mode `bg-slate-50` / `bg-slate-100` (#f1f5f9) */
+html:not(.dark) .bg-slate-800,
+html:not(.dark) .bg-slate-800\/90,
+html:not(.dark) .bg-slate-800\/80,
+html:not(.dark) .bg-slate-800\/70,
+html:not(.dark) .bg-slate-800\/60,
+html:not(.dark) .bg-slate-800\/50,
+html:not(.dark) [class*="bg-slate-800"],
+html.light .bg-slate-800,
+html.light .bg-slate-800\/90,
+html.light .bg-slate-800\/80,
+html.light .bg-slate-800\/70,
+html.light .bg-slate-800\/60,
+html.light .bg-slate-800\/50,
+html.light [class*="bg-slate-800"] {
+  background-color: #f1f5f9 !important;
+  border-color: #e2e8f0 !important;
+  color: #1e293b !important;
+}
+
+/* Explicit Table headers surface: #f1f5f9 Slate 100 */
+html:not(.dark) thead,
+html:not(.dark) thead tr,
+html:not(.dark) thead th,
+html.light thead,
+html.light thead tr,
+html.light thead th {
+  background-color: #f1f5f9 !important;
+  color: #475569 !important;
+  border-color: #e2e8f0 !important;
+}
+
+/* Hover surfaces in light mode */
+html:not(.dark) .hover\:bg-slate-800:hover,
+html.light .hover\:bg-slate-800:hover {
+  background-color: #e2e8f0 !important;
+}
+
+html:not(.dark) .hover\:bg-slate-700:hover,
+html.light .hover\:bg-slate-700:hover {
+  background-color: #cbd5e1 !important;
+}
+
+/* 4. Borders:
+   Dark mode `border-slate-800` -> Light mode `border-slate-200` (#e2e8f0)
+   Dark mode `border-slate-700` -> Light mode `border-slate-300` (#cbd5e1) */
+html:not(.dark) .border-slate-800,
+html:not(.dark) .border-slate-800\/90,
+html:not(.dark) .border-slate-800\/80,
+html:not(.dark) .border-slate-800\/70,
+html:not(.dark) .border-slate-800\/60,
+html:not(.dark) .border-slate-800\/50,
+html:not(.dark) .border-slate-800\/40,
+html:not(.dark) .border-slate-800\/30,
+html:not(.dark) .border-slate-800\/20,
+html:not(.dark) .divide-slate-800,
+html:not(.dark) .divide-slate-800\/80,
+html:not(.dark) .divide-slate-800\/60,
+html:not(.dark) [class*="border-slate-800"],
+html.light .border-slate-800,
+html.light .border-slate-800\/90,
+html.light .border-slate-800\/80,
+html.light .border-slate-800\/70,
+html.light .border-slate-800\/60,
+html.light .border-slate-800\/50,
+html.light .border-slate-800\/40,
+html.light .border-slate-800\/30,
+html.light .border-slate-800\/20,
+html.light .divide-slate-800,
+html.light .divide-slate-800\/80,
+html.light .divide-slate-800\/60,
+html.light [class*="border-slate-800"] {
+  border-color: #e2e8f0 !important;
+}
+
+html:not(.dark) .border-slate-700,
+html:not(.dark) .border-slate-700\/80,
+html:not(.dark) .border-slate-700\/60,
+html:not(.dark) .border-slate-700\/50,
+html:not(.dark) .divide-slate-700,
+html:not(.dark) [class*="border-slate-700"],
+html.light .border-slate-700,
+html.light .border-slate-700\/80,
+html.light .border-slate-700\/60,
+html.light .border-slate-700\/50,
+html.light .divide-slate-700,
+html.light [class*="border-slate-700"] {
+  border-color: #cbd5e1 !important;
+}
+
+/* 5. Text Hierarchy:
+   Dark mode `text-white` -> Light mode `text-slate-950` (#020617)
+   Dark mode `text-slate-200` -> Light mode `text-slate-800` (#1e293b)
+   Dark mode `text-slate-400` -> Light mode `text-slate-500` (#64748b)
+   Dark mode `text-slate-500` -> Light mode `text-slate-400` (#94a3b8) */
+html:not(.dark) .text-white,
+html.light .text-white {
+  color: #020617 !important;
+}
+
+html:not(.dark) .text-slate-100,
+html.light .text-slate-100 {
+  color: #020617 !important;
+}
+
+html:not(.dark) .text-slate-200,
+html.light .text-slate-200 {
+  color: #1e293b !important;
+}
+
+html:not(.dark) .text-slate-300,
+html.light .text-slate-300 {
+  color: #334155 !important;
+}
+
+html:not(.dark) .text-slate-400,
+html.light .text-slate-400 {
+  color: #64748b !important;
+}
+
+html:not(.dark) .text-slate-500,
+html.light .text-slate-500 {
+  color: #94a3b8 !important;
+}
+
+/* 6. Accent Colors & Badges:
+   Dark mode `text-sky-400` -> Light mode `text-sky-700` (#0369a1)
+   Dark mode `bg-sky-950/40` -> Light mode `bg-sky-50` (#f0f9ff)
+   Dark mode `text-emerald-400` -> Light mode `text-emerald-700` (#047857)
+   Dark mode `bg-emerald-950/30` -> Light mode `bg-emerald-50` (#ecfdf5)
+   Dark mode `text-rose-400` -> Light mode `text-rose-700` (#be123c)
+   Dark mode `bg-amber-950/30` -> Light mode `bg-amber-50` (#fffbeb) */
+
+html:not(.dark) .text-sky-400,
+html:not(.dark) .text-sky-300,
+html.light .text-sky-400,
+html.light .text-sky-300 {
+  color: #0369a1 !important;
+}
+
+html:not(.dark) .bg-sky-950,
+html:not(.dark) .bg-sky-950\/40,
+html:not(.dark) .bg-sky-950\/50,
+html:not(.dark) .bg-sky-950\/30,
+html:not(.dark) .bg-sky-950\/20,
+html:not(.dark) .bg-sky-900\/40,
+html:not(.dark) .bg-sky-900\/30,
+html:not(.dark) [class*="bg-sky-950"],
+html.light .bg-sky-950,
+html.light .bg-sky-950\/40,
+html.light .bg-sky-950\/50,
+html.light .bg-sky-950\/30,
+html.light .bg-sky-950\/20,
+html.light .bg-sky-900\/40,
+html.light .bg-sky-900\/30,
+html.light [class*="bg-sky-950"] {
+  background-color: #f0f9ff !important;
+  border-color: #bae6fd !important;
+}
+
+html:not(.dark) .text-emerald-400,
+html:not(.dark) .text-emerald-300,
+html.light .text-emerald-400,
+html.light .text-emerald-300 {
+  color: #047857 !important;
+}
+
+html:not(.dark) .bg-emerald-950,
+html:not(.dark) .bg-emerald-950\/40,
+html:not(.dark) .bg-emerald-950\/30,
+html:not(.dark) .bg-emerald-950\/20,
+html:not(.dark) .bg-emerald-900\/40,
+html:not(.dark) .bg-emerald-900\/30,
+html:not(.dark) [class*="bg-emerald-950"],
+html.light .bg-emerald-950,
+html.light .bg-emerald-950\/40,
+html.light .bg-emerald-950\/30,
+html.light .bg-emerald-950\/20,
+html.light .bg-emerald-900\/40,
+html.light .bg-emerald-900\/30,
+html.light [class*="bg-emerald-950"] {
+  background-color: #ecfdf5 !important;
+  border-color: #a7f3d0 !important;
+}
+
+html:not(.dark) .text-rose-400,
+html:not(.dark) .text-rose-300,
+html.light .text-rose-400,
+html.light .text-rose-300 {
+  color: #be123c !important;
+}
+
+html:not(.dark) .bg-rose-950,
+html:not(.dark) .bg-rose-950\/40,
+html:not(.dark) .bg-rose-950\/30,
+html:not(.dark) .bg-rose-950\/20,
+html:not(.dark) [class*="bg-rose-950"],
+html.light .bg-rose-950,
+html.light .bg-rose-950\/40,
+html.light .bg-rose-950\/30,
+html.light .bg-rose-950\/20,
+html.light [class*="bg-rose-950"] {
+  background-color: #fff1f2 !important;
+  border-color: #fecdd3 !important;
+}
+
+html:not(.dark) .bg-amber-950,
+html:not(.dark) .bg-amber-950\/40,
+html:not(.dark) .bg-amber-950\/30,
+html:not(.dark) .bg-amber-950\/20,
+html:not(.dark) .bg-amber-900\/40,
+html:not(.dark) .bg-amber-900\/30,
+html:not(.dark) [class*="bg-amber-950"],
+html.light .bg-amber-950,
+html.light .bg-amber-950\/40,
+html.light .bg-amber-950\/30,
+html.light .bg-amber-950\/20,
+html.light .bg-amber-900\/40,
+html.light .bg-amber-900\/30,
+html.light [class*="bg-amber-950"] {
+  background-color: #fffbeb !important;
+  border-color: #fde68a !important;
+}
+
+html:not(.dark) .text-amber-400,
+html:not(.dark) .text-amber-300,
+html.light .text-amber-400,
+html.light .text-amber-300 {
+  color: #b45309 !important;
+}
+
+html:not(.dark) .text-indigo-400,
+html:not(.dark) .text-indigo-300,
+html.light .text-indigo-400,
+html.light .text-indigo-300 {
+  color: #4338ca !important;
+}
+
+html:not(.dark) .bg-indigo-950,
+html:not(.dark) .bg-indigo-950\/40,
+html:not(.dark) .bg-indigo-950\/30,
+html:not(.dark) .bg-indigo-950\/20,
+html:not(.dark) [class*="bg-indigo-950"],
+html.light .bg-indigo-950,
+html.light .bg-indigo-950\/40,
+html.light .bg-indigo-950\/30,
+html.light .bg-indigo-950\/20,
+html.light [class*="bg-indigo-950"] {
+  background-color: #eef2ff !important;
+  border-color: #c7d2fe !important;
+}
+
+/* 7. Primary Actions:
+   Primary actions: #0284c7 Sky 600
+   Text & icons inside saturated action buttons MUST remain pure white (#ffffff) */
+html:not(.dark) .bg-sky-600,
+html:not(.dark) .bg-sky-500,
+html:not(.dark) .bg-emerald-600,
+html:not(.dark) .bg-emerald-500,
+html:not(.dark) .bg-rose-600,
+html:not(.dark) .bg-rose-500,
+html:not(.dark) .bg-amber-600,
+html:not(.dark) .bg-indigo-600,
+html:not(.dark) button.bg-sky-600,
+html:not(.dark) button.bg-emerald-600,
+html:not(.dark) button.bg-rose-600,
+html:not(.dark) button.bg-amber-600,
+html:not(.dark) button.bg-indigo-600,
+html:not(.dark) a.bg-sky-600,
+html:not(.dark) .bg-sky-600 *,
+html:not(.dark) .bg-emerald-600 *,
+html:not(.dark) .bg-rose-600 *,
+html:not(.dark) .bg-amber-600 *,
+html:not(.dark) .bg-indigo-600 *,
+html.light .bg-sky-600,
+html.light .bg-sky-500,
+html.light .bg-emerald-600,
+html.light .bg-emerald-500,
+html.light .bg-rose-600,
+html.light .bg-rose-500,
+html.light .bg-amber-600,
+html.light .bg-indigo-600,
+html.light button.bg-sky-600,
+html.light button.bg-emerald-600,
+html.light button.bg-rose-600,
+html.light button.bg-amber-600,
+html.light button.bg-indigo-600,
+html.light a.bg-sky-600,
+html.light .bg-sky-600 *,
+html.light .bg-emerald-600 *,
+html.light .bg-rose-600 *,
+html.light .bg-amber-600 *,
+html.light .bg-indigo-600 * {
+  color: #ffffff !important;
+}
+
+html:not(.dark) .bg-sky-600 .fill-white,
+html:not(.dark) .bg-emerald-600 .fill-white,
+html:not(.dark) .bg-rose-600 .fill-white,
+html:not(.dark) button .fill-white,
+html.light .bg-sky-600 .fill-white,
+html.light .bg-emerald-600 .fill-white,
+html.light .bg-rose-600 .fill-white,
+html.light button .fill-white {
+  fill: #ffffff !important;
+}
+
+/* 8. Inputs & Form Controls */
+html:not(.dark) input:not([type="checkbox"]):not([type="radio"]),
+html:not(.dark) select,
+html:not(.dark) textarea,
+html.light input:not([type="checkbox"]):not([type="radio"]),
+html.light select,
+html.light textarea {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  color: #020617 !important;
+}
+
+html:not(.dark) input::placeholder,
+html:not(.dark) textarea::placeholder,
+html.light input::placeholder,
+html.light textarea::placeholder {
+  color: #94a3b8 !important;
+}
+
+/* 9. Modal Backdrops & Overlays */
+html:not(.dark) .fixed.inset-0.bg-slate-950\/80,
+html:not(.dark) .fixed.inset-0.bg-slate-950\/85,
+html:not(.dark) .fixed.inset-0.bg-slate-950\/90,
+html.light .fixed.inset-0.bg-slate-950\/80,
+html.light .fixed.inset-0.bg-slate-950\/85,
+html.light .fixed.inset-0.bg-slate-950\/90 {
+  background-color: rgba(15, 23, 42, 0.45) !important;
+}
+
+/* 10. Light Mode: Light 10% Grey Shade Tiles (Team Pair Ranking & Podium & Session History & Leaderboards) */
+html:not(.dark) .light-10-grey-tile,
+html:not(.dark) .light-17-grey-tile,
+html.light .light-10-grey-tile,
+html.light .light-17-grey-tile {
+  background-color: #e6e8ec !important;
+  background-image: none !important;
+  border-color: #cbd5e1 !important;
+  color: #000000 !important;
+  box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.08), 0 1px 2px -1px rgb(0 0 0 / 0.05) !important;
+}
+
+html:not(.dark) .light-10-grey-tile.podium-gold,
+html:not(.dark) .light-17-grey-tile.podium-gold,
+html.light .light-10-grey-tile.podium-gold,
+html.light .light-17-grey-tile.podium-gold {
+  border-color: #d97706 !important;
+  border-width: 1.5px !important;
+  box-shadow: 0 4px 10px -1px rgba(217, 119, 6, 0.18), 0 2px 4px -2px rgba(217, 119, 6, 0.1) !important;
+}
+
+html:not(.dark) .light-10-grey-tile.podium-silver,
+html:not(.dark) .light-17-grey-tile.podium-silver,
+html.light .light-10-grey-tile.podium-silver,
+html.light .light-17-grey-tile.podium-silver {
+  border-color: #64748b !important;
+  border-width: 1.5px !important;
+  box-shadow: 0 4px 10px -1px rgba(100, 116, 139, 0.18), 0 2px 4px -2px rgba(100, 116, 139, 0.1) !important;
+}
+
+html:not(.dark) .light-10-grey-tile.podium-bronze,
+html:not(.dark) .light-17-grey-tile.podium-bronze,
+html.light .light-10-grey-tile.podium-bronze,
+html.light .light-17-grey-tile.podium-bronze {
+  border-color: #b45309 !important;
+  border-width: 1.5px !important;
+  box-shadow: 0 4px 10px -1px rgba(180, 83, 9, 0.18), 0 2px 4px -2px rgba(180, 83, 9, 0.1) !important;
+}
+
+/* High contrast inner items & boxes on 10% grey tiles */
+html:not(.dark) .light-10-grey-tile .contrast-inner-box,
+html:not(.dark) .light-10-grey-tile .podium-stat-box,
+html:not(.dark) .light-10-grey-tile .podium-medal-badge,
+html:not(.dark) .light-10-grey-tile .banner-stat-box,
+html:not(.dark) .light-10-grey-tile .history-tabs-container,
+html:not(.dark) .light-10-grey-tile .history-icon-box,
+html:not(.dark) .light-17-grey-tile .contrast-inner-box,
+html:not(.dark) .light-17-grey-tile .podium-stat-box,
+html:not(.dark) .light-17-grey-tile .podium-medal-badge,
+html:not(.dark) .light-17-grey-tile .banner-stat-box,
+html:not(.dark) .light-17-grey-tile .history-tabs-container,
+html:not(.dark) .light-17-grey-tile .history-icon-box,
+html.light .light-10-grey-tile .contrast-inner-box,
+html.light .light-10-grey-tile .podium-stat-box,
+html.light .light-10-grey-tile .podium-medal-badge,
+html.light .light-10-grey-tile .banner-stat-box,
+html.light .light-10-grey-tile .history-tabs-container,
+html.light .light-10-grey-tile .history-icon-box,
+html.light .light-17-grey-tile .contrast-inner-box,
+html.light .light-17-grey-tile .podium-stat-box,
+html.light .light-17-grey-tile .podium-medal-badge,
+html.light .light-17-grey-tile .banner-stat-box,
+html.light .light-17-grey-tile .history-tabs-container,
+html.light .light-17-grey-tile .history-icon-box {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  color: #000000 !important;
+  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.06) !important;
+}
+
+/* Text elements inside 10% grey tiles in light mode */
+html:not(.dark) .light-10-grey-tile h2,
+html:not(.dark) .light-10-grey-tile h3,
+html:not(.dark) .light-17-grey-tile h2,
+html:not(.dark) .light-17-grey-tile h3,
+html.light .light-10-grey-tile h2,
+html.light .light-10-grey-tile h3,
+html.light .light-17-grey-tile h2,
+html.light .light-17-grey-tile h3 {
+  color: #000000 !important;
+}
+
+html:not(.dark) .light-10-grey-tile p,
+html:not(.dark) .light-17-grey-tile p,
+html.light .light-10-grey-tile p,
+html.light .light-17-grey-tile p {
+  color: #1e293b !important;
+}
+
+
