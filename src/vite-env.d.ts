@@ -23,6 +23,9 @@ interface ImportMetaEnv {
   readonly FIREBASE_PROD_STORAGE_BUCKET?: string;
   readonly FIREBASE_PROD_MESSAGING_SENDER_ID?: string;
   readonly FIREBASE_PROD_APP_ID?: string;
+  readonly VITE_APP_ENV?: string;
+  readonly VITE_GIT_BRANCH?: string;
+  readonly VITE_DEPLOY_ENV?: string;
 }
 
 interface ImportMeta {

@@ -12,6 +12,7 @@ import {
 import type { ClubEntity, SessionEntity } from '../types';
 import { ClubLogo } from './ClubLogo';
 import { PWAInstallButton } from './PWAInstallButton';
+import { getAppEnvironment, getEnvironmentStyle } from '../lib/environment';
 
 interface NavbarProps {
   activeTab: 'SETUP' | 'CLUB' | 'LIVE' | 'HISTORY';
@@ -36,6 +37,8 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   const themeColor = clubDetails?.themeColorHex || '#0284C7';
   const isDark = theme === 'dark';
+  const currentEnv = getAppEnvironment();
+  const envStyle = getEnvironmentStyle(currentEnv);
 
   return (
     <header className={`sticky top-0 z-40 backdrop-blur-md transition-colors ${
@@ -160,6 +163,19 @@ export const Navbar: React.FC<NavbarProps> = ({
             >
               {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
+
+            {/* Environment Badge: LOCAL (Cyan/Sky), DEV (Red), TEST (Amber) next to SYNC */}
+            <div 
+              title={envStyle.description}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-black font-mono transition-all select-none ${
+                isDark ? envStyle.darkStyle : envStyle.lightStyle
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full ${envStyle.dotColor}`} />
+              <span className="text-[11px] tracking-wider">
+                {envStyle.label}
+              </span>
+            </div>
 
             {/* Sync Indicator: Green when logged in, Red when logged out */}
             <div 
