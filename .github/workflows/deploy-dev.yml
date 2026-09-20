@@ -35,6 +35,14 @@ jobs:
         run: |
           gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
 
+      - name: Ensure Artifact Registry Repository Exists
+        run: |
+          gcloud artifacts repositories describe ${{ env.REPOSITORY_NAME }} --location=${{ env.GCP_REGION }} --quiet || \
+          gcloud artifacts repositories create ${{ env.REPOSITORY_NAME }} \
+            --repository-format=docker \
+            --location=${{ env.GCP_REGION }} \
+            --description="Docker repository for Shuttler Club Web" --quiet
+
       - name: Build & Push Docker Image
         env:
           IMAGE_TAG: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.REPOSITORY_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
