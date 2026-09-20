@@ -69,6 +69,61 @@ The application employs a 4-tier data pipeline designed to guarantee instantaneo
 
 ---
 
+## 2.4 Session Manager Lifecycle & UID Reuse Architecture
+
+To maintain secure, non-destructive user accounts across club-level administrative workflows:
+
+```
+[Club Manager Action: Add Session Manager (email@example.com)]
+                       │
+                       ▼
+         [Check /auth_users/{sanitizedEmail}] 
+         [Check Firebase Auth / clubs scan]
+                       │
+       ┌───────────────┴───────────────┐
+       ▼                               ▼
+ [User Exists]                   [New User]
+       │                               │
+       │                               ▼
+       │                  [Create on Secondary App Instance]
+       │                  (SecondaryAuth prevents logging out Club Manager)
+       │                               │
+       │                               ▼
+       │                  [Extract new user.uid]
+       │                  [Persist to /auth_users/{sanitizedEmail}]
+       │                               │
+       ├───────────────────────────────┘
+       ▼
+ [Reuse Existing / Resolved UID]
+       │
+       ├─► Store in /clubs/{clubId}/session_managers/manager_{id} with authUid
+       ├─► Store in /user_club_index/{sanitizedEmail}/{clubId} with ownerUid
+       ├─► Trigger sendPasswordResetEmail(auth, email)
+       └─► Return { success: true, uid, isExistingUser: true/false }
+
+[Club Manager Action: Delete Session Manager]
+                       │
+                       ├─► Remove /clubs/{clubId}/session_managers/manager_{id}
+                       ├─► Remove /user_club_index/{sanitizedEmail}/{clubId}
+                       │
+                       ▼
+       [PERSISTENT STATE MAINTAINED]
+       - Firebase Authentication User Account REMAINS in Firebase Auth
+       - /auth_users/{sanitizedEmail} REMAINS in Realtime Database
+
+[Subsequent Re-creation with Same Email]
+                       │
+                       ▼
+       Detected immediately via /auth_users registry!
+       Existing UID is reused without attempting duplicate creation.
+```
+
+1. **Secondary App Pattern (`SecondaryAuth`)**: Creates user accounts via a disposable Firebase App instance (`SecondaryAuth_${Date.now()}`), preventing the client SDK from switching the active Club Manager's authenticated session.
+2. **Persistent Identity Store (`/auth_users/{sanitizedEmail}`)**: Bridges client-side Firebase Auth limitations (where client applications cannot query all Auth UIDs without Admin SDK credentials) by persisting each registered email's Auth UID in RTDB.
+3. **Graceful Recreation**: When a deleted manager is re-added, the system detects the existing UID, bypasses `createUserWithEmailAndPassword`, assigns the existing UID to the new manager entity and `user_club_index`, and sends a password reset link for instant access.
+
+---
+
 ## 3. Core Algorithmic Architecture
 
 ### 3.1 Fair Match Allocation Algorithm (`FairMatchAllocation`)
@@ -201,6 +256,64 @@ Check against Club Contact / Description
 
 ---
 
+### 5.3 Session Manager User Lifecycle & UID Reuse Architecture
+
+To guarantee smooth operational management when session managers leave and return to a club, the user lifecycle separates Firebase Authentication identity from club membership records:
+
+```
+[ Club Manager adds Session Manager (email) ]
+                    │
+                    ▼
+  Check persistent lookup: /auth_users/{sanitizedEmail}
+        ├── Found existing record?
+        │     └── REUSE existing UID (no duplicate Auth creation)
+        └── Not found?
+              ├── Attempt Firebase Auth user creation
+              ├── If email-already-in-use -> sign in to acquire UID
+              └── Register UID mapping in /auth_users/{sanitizedEmail}
+                    │
+                    ▼
+  Store club-scoped membership: /clubs/{clubId}/session_managers/manager_{id}
+```
+
+- **Non-Destructive Deletion**: Deleting a manager from a club removes `/clubs/{clubId}/session_managers/manager_{id}` and club index associations, while leaving their Firebase Auth identity intact in `/auth_users/`.
+- **Seamless Re-Creation**: If the same email is added later (in the same or another club), the system detects the existing record and links the manager using the original UID without throwing authentication errors.
+
+---
+
+### 5.4 Multi-Tenant Architecture & Strict Data Isolation
+
+The application enforces total isolation between clubs, treating each club as an independent tenant:
+
+```
+                                  [ Client Application State ]
+                                                │
+                                    Switch Club ID Event
+                                                │
+                 ┌──────────────────────────────┴──────────────────────────────┐
+                 ▼                                                             ▼
+    [ 1. Complete Memory Wipe ]                                   [ 2. Listener Cancellation ]
+    • clearClubState() resets:                                    • Unsubscribe RTDB listener
+      players, courtMasters, managers,                            • Flag isCancelled = true
+      weeklySessions, live sessions,                              • Discard pending async reads
+      matches, courts, join tables                                • Invalidate loadedClubIdRef
+                 │                                                             │
+                 └──────────────────────────────┬──────────────────────────────┘
+                                                │
+                                                ▼
+                          [ 3. Isolated State Hydration ]
+                          • Local Storage Key: badminton_club_state_{currentClubId}
+                          • RTDB Path: clubs/{currentClubId}
+                          • Zero Fallback: If snapshot is empty, UI remains strictly blank
+                          • No Auto-Seeding: Default sample data never injected into user clubs
+```
+
+1. **Scoped Storage**: Local caching strictly validates `cached.clubId === currentClubId`. Mismatched records are immediately discarded.
+2. **Zero Default Fallback**: Under no circumstances does the application populate an empty club with fallback or sample records from another club. Empty clubs display clean empty-state interfaces ready for initial club configuration.
+3. **Dedicated Authentication**: Each club operates as a standalone tenant; to access a different club, users sign out and sign in to the respective club account.
+
+---
+
 ## 6. Design System & CSS Token Architecture
 
 The styling layer uses **Tailwind CSS v4** with a custom theme provider toggling the `dark` class on the root `<html>` element.
@@ -260,7 +373,22 @@ src/
 
 ---
 
-## 8. Build & Deployment Architecture
+## 8. Unplayed & 0–0 Game Handling Policy
+
+### 8.1 Confirmation Workflow
+When recording or updating a game score:
+- If no score has been entered for either team (or user clicks "Finish without Scores", or inputs are 0-0), a confirmation dialog appears:
+  > **“No score has been entered. Do you want to record this game as 0–0?”**
+- **No / Cancel**: Returns to the score entry screen, preserving state and allowing the user to enter the correct scores.
+- **Yes / Confirm**: Treats the 0–0 result as an indication that the game was not played or should not be counted. The match is cancelled/removed.
+
+### 8.2 Statistical & Persistence Guarantees
+- **Exclusion from Metrics**: 0–0 matches are strictly filtered out by `isMatchValidAndCounted(m)`. They are excluded from player statistics, game counts, win/loss records, averages, leaderboard rankings, and allocation history.
+- **Database Non-Persistence**: 0–0 matches are never persisted as completed games in Firestore, Realtime Database, or local offline storage cache. If encountered during sync or load, they are purged.
+
+---
+
+## 9. Build & Deployment Architecture
 
 - **Bundler**: Vite 6 utilizing `@vitejs/plugin-react` and `@tailwindcss/vite`.
 - **Target Runtime**: Node.js 18+ / Modern Evergreen Browsers (Chrome, Safari, Firefox, Edge).

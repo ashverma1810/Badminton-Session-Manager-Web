@@ -16,7 +16,7 @@ import {
   User
 } from 'lucide-react';
 import type { PlayerEntity, SessionEntity, MatchEntity, MemberSessionPerformance } from '../types';
-import { StatsCalculator } from '../utils/badmintonLogic';
+import { StatsCalculator, isMatchValidAndCounted } from '../utils/badmintonLogic';
 
 interface MemberPerformanceModalProps {
   player: PlayerEntity | null;
@@ -57,9 +57,7 @@ export const MemberPerformanceModal: React.FC<MemberPerformanceModalProps> = ({
 
     chronologicalSessions.forEach((sess) => {
       const matches = allMatchesMap[sess.id] || [];
-      const completedSessionMatches = matches.filter((m) => {
-        return m && m.endTime != null && m.teamAScore != null && m.teamBScore != null;
-      });
+      const completedSessionMatches = matches.filter(isMatchValidAndCounted);
 
       // Accumulate completed matches chronologically for ratings calculation
       cumulativeMatches.push(...completedSessionMatches);

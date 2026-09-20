@@ -16,6 +16,7 @@ import {
   CheckCircle,
   HelpCircle,
   AlertTriangle,
+  AlertCircle,
   ChevronDown,
   Check,
   X,
@@ -36,7 +37,7 @@ import type {
   Gender,
   CourtMasterEntity
 } from '../types';
-import { FairMatchAllocation, StatsCalculator, soundEngine } from '../utils/badmintonLogic';
+import { FairMatchAllocation, StatsCalculator, soundEngine, isMatchValidAndCounted } from '../utils/badmintonLogic';
 
 export function calculateWinningScore(losingScore: number, targetScore: number = 21): number {
   const maxCap = targetScore === 15 ? 20 : (targetScore === 21 ? 30 : targetScore + 9);
@@ -133,6 +134,12 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
   const [finishingMatch, setFinishingMatch] = useState<MatchEntity | null>(null);
   const [scoreInputA, setScoreInputA] = useState<string>('');
   const [scoreInputB, setScoreInputB] = useState<string>('');
+
+  // Zero score (0–0) confirmation state
+  const [zeroScoreConfirm, setZeroScoreConfirm] = useState<{
+    match: MatchEntity;
+    source: 'FINISH_MODAL' | 'DELETE_MODAL';
+  } | null>(null);
 
   // Delete / End Game Dialog State (Mobile App Parity)
   const [deletingMatch, setDeletingMatch] = useState<MatchEntity | null>(null);
@@ -232,9 +239,9 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
   const pausedPlayers = sessionPlayers.filter((p) => p.isPaused && !p.isPlaying);
   const waitingPlayers = sessionPlayers.filter((p) => !p.isPaused && !p.isPlaying);
 
-  // Completed matches
+  // Completed matches (excluding unplayed 0-0 matches)
   const completedMatches = matches
-    .filter((m) => Boolean(m.endTime))
+    .filter(isMatchValidAndCounted)
     .sort((a, b) => (b.endTime || 0) - (a.endTime || 0));
 
   // Player stats
@@ -346,13 +353,30 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
     
     let valA = 0;
     let valB = 0;
-    let winner: 'A' | 'B' = 'A';
+    const trimmedA = scoreInputA.trim();
+    const trimmedB = scoreInputB.trim();
 
-    if (!noScores && scoreInputA.trim() !== '' && scoreInputB.trim() !== '') {
-      valA = parseInt(scoreInputA, 10) || 0;
-      valB = parseInt(scoreInputB, 10) || 0;
-      winner = valA >= valB ? 'A' : 'B';
+    if (trimmedA !== '') {
+      valA = parseInt(trimmedA, 10) || 0;
     }
+    if (trimmedB !== '') {
+      valB = parseInt(trimmedB, 10) || 0;
+    }
+
+    // Check if no score has been entered for either team (or both 0 or Finish without Scores)
+    const hasAnyScore = !noScores && (trimmedA !== '' || trimmedB !== '') && (valA > 0 || valB > 0);
+
+    if (!hasAnyScore) {
+      // Prompt user confirmation:
+      // “No score has been entered. Do you want to record this game as 0–0?”
+      setZeroScoreConfirm({
+        match: finishingMatch,
+        source: 'FINISH_MODAL'
+      });
+      return;
+    }
+
+    const winner: 'A' | 'B' = valA >= valB ? 'A' : 'B';
 
     setFinishingMatch(null);
     setScoreInputA('');
@@ -373,9 +397,27 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
   // Delete Dialog Handlers (Mobile App Parity)
   const handleSaveAndCompleteFromDelete = async () => {
     if (!deletingMatch) return;
-    const valA = parseInt(deleteScoreA, 10);
-    const valB = parseInt(deleteScoreB, 10);
-    if (isNaN(valA) || isNaN(valB)) return;
+    let valA = 0;
+    let valB = 0;
+    const trimmedA = deleteScoreA.trim();
+    const trimmedB = deleteScoreB.trim();
+
+    if (trimmedA !== '') {
+      valA = parseInt(trimmedA, 10) || 0;
+    }
+    if (trimmedB !== '') {
+      valB = parseInt(trimmedB, 10) || 0;
+    }
+
+    const hasAnyScore = (trimmedA !== '' || trimmedB !== '') && (valA > 0 || valB > 0);
+
+    if (!hasAnyScore) {
+      setZeroScoreConfirm({
+        match: deletingMatch,
+        source: 'DELETE_MODAL'
+      });
+      return;
+    }
 
     const winner: 'A' | 'B' = valA >= valB ? 'A' : 'B';
     const matchId = deletingMatch.id;
@@ -395,6 +437,31 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
     } catch {}
 
     await onFinishMatch(matchId, valA, valB, winner);
+  };
+
+  // Zero Score (0–0) Confirmation Actions
+  const handleZeroScoreCancel = () => {
+    // If the user selects No/Cancel, return to the score entry screen and allow them to enter the correct score.
+    setZeroScoreConfirm(null);
+  };
+
+  const handleZeroScoreConfirm = async () => {
+    if (!zeroScoreConfirm) return;
+    const matchId = zeroScoreConfirm.match.id;
+
+    // If the user selects Yes/Confirm, treat the 0–0 result as an indication that the game was not played or should not be counted.
+    // Do not record the game, and exclude it from player statistics, game counts, leaderboard calculations, averages, ratings, and any other performance metrics.
+    // The game should not be persisted as a completed 0–0 game in the database.
+    setZeroScoreConfirm(null);
+    setFinishingMatch(null);
+    setScoreInputA('');
+    setScoreInputB('');
+    setDeletingMatch(null);
+    setDeleteShowRecordScore(false);
+    setDeleteScoreA('');
+    setDeleteScoreB('');
+
+    await onCancelMatch(matchId);
   };
 
   const handleIgnoreAndDelete = async () => {
@@ -1573,6 +1640,52 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
                 className="w-full py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-slate-200 cursor-pointer"
               >
                 Keep Game Playing
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* POPUP: ZERO SCORE (0–0) CONFIRMATION MODAL */}
+      {zeroScoreConfirm && (
+        <div 
+          id="zero-score-confirm-modal-backdrop"
+          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md animate-in fade-in"
+        >
+          <div 
+            id="zero-score-confirm-dialog"
+            className="bg-slate-900 border border-slate-700 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-150"
+          >
+            <div className="flex items-start gap-3.5">
+              <div className="w-11 h-11 rounded-2xl bg-amber-500/10 border border-amber-500/25 flex items-center justify-center shrink-0 text-amber-400">
+                <AlertCircle className="w-6 h-6" />
+              </div>
+              <div className="space-y-1.5 pt-0.5">
+                <h3 className="text-base font-black text-slate-100 leading-snug">
+                  No score has been entered. Do you want to record this game as 0–0?
+                </h3>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Treating this game as 0–0 indicates the game was not played or should not be counted. It will not be recorded or persisted, and will be excluded from all player statistics, game counts, averages, and leaderboards.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+              <button
+                id="zero-score-cancel-btn"
+                type="button"
+                onClick={handleZeroScoreCancel}
+                className="px-4 py-2.5 rounded-xl text-xs font-bold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-colors cursor-pointer"
+              >
+                No / Cancel
+              </button>
+              <button
+                id="zero-score-confirm-btn"
+                type="button"
+                onClick={handleZeroScoreConfirm}
+                className="px-5 py-2.5 rounded-xl text-xs font-black bg-amber-600 hover:bg-amber-500 text-white shadow-lg transition-colors cursor-pointer"
+              >
+                Yes / Confirm
               </button>
             </div>
           </div>

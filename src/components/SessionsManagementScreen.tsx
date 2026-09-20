@@ -94,7 +94,7 @@ interface SessionsManagementScreenProps {
   onAddMember: (name: string, gender: Gender, isPAYG: boolean) => Promise<void>;
   onDeleteMember: (memberId: number) => Promise<void>;
   onToggleMemberPAYG: (memberId: number, currentPAYG: boolean) => Promise<void>;
-  onAddSessionManager: (name: string, email: string) => Promise<{ success: boolean; message?: string } | void>;
+  onAddSessionManager: (name: string, email: string) => Promise<{ success: boolean; message?: string; uid?: string; isExistingUser?: boolean } | void>;
   onDeleteSessionManager: (managerId: number) => Promise<void>;
   onResendPasswordReset?: (managerId: number, email: string) => Promise<{ success: boolean; message: string }>;
   currentUserRole?: 'CLUB_MANAGER' | 'SESSION_MANAGER';
@@ -397,16 +397,19 @@ export const SessionsManagementScreen: React.FC<SessionsManagementScreenProps> =
     if (!newManagerName.trim() || !newManagerEmail.trim()) return;
     setIsCreatingManager(true);
     try {
-      const res = await onAddSessionManager(newManagerName.trim(), newManagerEmail.trim());
+      const res: any = await onAddSessionManager(newManagerName.trim(), newManagerEmail.trim());
       if (res && !res.success) {
         setManagerFeedback({
           type: 'error',
           message: res.message || 'Failed to create session manager account.'
         });
       } else {
+        const isReused = res?.isExistingUser;
         setManagerFeedback({
           type: 'success',
-          message: `Manager ${newManagerName.trim()} created! A password reset email was sent to ${newManagerEmail.trim()}.`
+          message: isReused
+            ? `Existing account detected! Manager ${newManagerName.trim()} linked reusing existing Authentication UID. A password reset email was sent to ${newManagerEmail.trim()}.`
+            : `Manager ${newManagerName.trim()} created! A password reset email was sent to ${newManagerEmail.trim()}.`
         });
         setNewManagerName('');
         setNewManagerEmail('');
@@ -1191,13 +1194,23 @@ export const SessionsManagementScreen: React.FC<SessionsManagementScreenProps> =
                     <div>
                       <h4 className="text-xs font-black text-slate-100">{manager.name}</h4>
                       <p className="text-[11px] text-slate-400">{manager.email || 'No email provided'}</p>
-                      <span className={`inline-block mt-0.5 text-[9px] font-bold px-1.5 py-0.2 rounded border uppercase ${
-                        manager.inviteStatus === 'EMAIL_SENT'
-                          ? 'bg-sky-500/20 text-sky-400 border-sky-500/30'
-                          : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                      }`}>
-                        {manager.inviteStatus === 'EMAIL_SENT' ? 'Password Reset Sent' : manager.inviteStatus}
-                      </span>
+                      <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                        <span className={`inline-block text-[9px] font-bold px-1.5 py-0.2 rounded border uppercase ${
+                          manager.inviteStatus === 'EMAIL_SENT'
+                            ? 'bg-sky-500/20 text-sky-400 border-sky-500/30'
+                            : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                        }`}>
+                          {manager.inviteStatus === 'EMAIL_SENT' ? 'Password Reset Sent' : manager.inviteStatus}
+                        </span>
+                        {(manager.authUid || manager.uid) && (
+                          <span 
+                            className="inline-block text-[9px] font-mono font-medium px-1.5 py-0.2 rounded border bg-slate-800 text-slate-300 border-slate-700"
+                            title={`Firebase Auth UID: ${manager.authUid || manager.uid}`}
+                          >
+                            UID: {(manager.authUid || manager.uid)!.slice(0, 8)}...
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
 

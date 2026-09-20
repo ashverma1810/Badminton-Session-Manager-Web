@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { 
   ref, 
   onValue, 
@@ -17,9 +17,14 @@ import {
 import { 
   rtdb,
   auth,
+  isFirebaseConfigured,
+  missingFirebaseConfigKeys,
   findClubsForUser,
   registerUserClubAssociation,
+  removeUserClubAssociation,
   createSessionManagerAuthUser,
+  createOrReuseSessionManagerAuthUser,
+  recordAuthUser,
   resendPasswordReset,
   parseRtdbClubData,
   syncMatchToRealtime,
@@ -44,7 +49,7 @@ import type {
   GameType,
   Gender
 } from './types';
-import { FairMatchAllocation, soundEngine } from './utils/badmintonLogic';
+import { FairMatchAllocation, soundEngine, isMatchValidAndCounted } from './utils/badmintonLogic';
 
 import { Navbar } from './components/Navbar';
 import { ClubSetupScreen } from './components/ClubSetupScreen';
@@ -54,6 +59,7 @@ import { HistoryScreen } from './components/HistoryScreen';
 import { FullscreenCourtMonitor } from './components/FullscreenCourtMonitor';
 import { MobileQRModal } from './components/MobileQRModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { OfflineIndicator } from './components/OfflineIndicator';
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'SETUP' | 'CLUB' | 'LIVE' | 'HISTORY'>('SETUP');
@@ -142,9 +148,32 @@ export const App: React.FC = () => {
     return () => unsubAuth();
   }, []);
 
-  // 2. Continuous local persistence backup: whenever club state changes, cache it locally
+  const loadedClubIdRef = useRef<string | null>(null);
+
+  // Pure state clearing: completely clears in-memory club records across all collections
+  const clearClubState = useCallback(() => {
+    setClubDetails(null);
+    setPlayers([]);
+    setCourtMasters([]);
+    setSessionManagers([]);
+    setWeeklySessions([]);
+    setWeeklyMembersMap({});
+    setWeeklyCourtsMap({});
+    setSessions([]);
+    setActiveCourts([]);
+    setActiveJoins([]);
+    setActiveMatches([]);
+    setAllCourtsMap({});
+    setAllMatchesMap({});
+    setAllJoinsMap({});
+  }, []);
+
+  // 2. Continuous local persistence backup: whenever club state changes, cache it locally (strictly scoped to currentClubId)
   useEffect(() => {
     if (!currentClubId || !clubDetails) return;
+    // Guard against saving mismatched or transitional cross-club state
+    if (loadedClubIdRef.current !== currentClubId) return;
+
     saveClubStateToLocal(currentClubId, {
       clubDetails,
       players,
@@ -173,71 +202,71 @@ export const App: React.FC = () => {
     allJoinsMap,
   ]);
 
-  // 3. Multi-tier Data Loading (Local Cache -> Firestore -> Realtime Database)
+  // 3. Multi-tier Data Loading (Local Cache -> Realtime Database) with Strict Tenant Isolation
   useEffect(() => {
+    // Immediately clear all previously loaded club data when club changes or unmounts
+    clearClubState();
+
     if (!currentClubId) {
-      setClubDetails(null);
-      setPlayers([]);
-      setCourtMasters([]);
-      setSessionManagers([]);
-      setWeeklySessions([]);
-      setSessions([]);
-      setActiveCourts([]);
-      setActiveJoins([]);
-      setActiveMatches([]);
+      loadedClubIdRef.current = null;
       return;
     }
 
-    // Tier 1: Instant load from Local Storage Cache
+    let isCancelled = false;
+
+    // Tier 1: Instant load from Local Storage Cache (strictly scoped to this clubId)
     const cached = loadClubStateFromLocal(currentClubId);
-    if (cached) {
+    if (cached && !isCancelled) {
       if (cached.clubDetails) setClubDetails(cached.clubDetails);
-      if (cached.players?.length) setPlayers(cached.players);
-      if (cached.courtMasters?.length) setCourtMasters(cached.courtMasters);
-      if (cached.sessionManagers?.length) setSessionManagers(cached.sessionManagers);
-      if (cached.weeklySessions?.length) {
-        setWeeklySessions(cached.weeklySessions);
-        setWeeklyMembersMap(cached.weeklyMembersMap || {});
-        setWeeklyCourtsMap(cached.weeklyCourtsMap || {});
+      setPlayers(cached.players || []);
+      setCourtMasters(cached.courtMasters || []);
+      setSessionManagers(cached.sessionManagers || []);
+      setWeeklySessions(cached.weeklySessions || []);
+      setWeeklyMembersMap(cached.weeklyMembersMap || {});
+      setWeeklyCourtsMap(cached.weeklyCourtsMap || {});
+      setSessions(cached.sessions || []);
+      setAllCourtsMap(cached.allCourtsMap || {});
+      setAllMatchesMap(cached.allMatchesMap || {});
+      setAllJoinsMap(cached.allJoinsMap || {});
+      const active = cached.sessions?.find((s) => s.isActive || s.status === 'Active' || s.status === 'Setting Up');
+      if (active) {
+        setActiveCourts(cached.allCourtsMap?.[active.id] || []);
+        setActiveJoins(cached.allJoinsMap?.[active.id] || []);
+        setActiveMatches(cached.allMatchesMap?.[active.id] || []);
+      } else {
+        setActiveCourts([]);
+        setActiveJoins([]);
+        setActiveMatches([]);
       }
-      if (cached.sessions?.length) {
-        setSessions(cached.sessions);
-        setAllCourtsMap(cached.allCourtsMap || {});
-        setAllMatchesMap(cached.allMatchesMap || {});
-        setAllJoinsMap(cached.allJoinsMap || {});
-        const active = cached.sessions.find((s) => s.isActive || s.status === 'Active' || s.status === 'Setting Up');
-        if (active) {
-          setActiveCourts(cached.allCourtsMap?.[active.id] || []);
-          setActiveJoins(cached.allJoinsMap?.[active.id] || []);
-          setActiveMatches(cached.allMatchesMap?.[active.id] || []);
-        }
-      }
+      loadedClubIdRef.current = currentClubId;
     }
 
     // Tier 2: Direct initial fetch from Firebase Realtime Database
     loadClubFromRealtime(currentClubId).then((rtdbData) => {
+      if (isCancelled) return;
       if (rtdbData) {
         if (rtdbData.clubDetails) setClubDetails(rtdbData.clubDetails);
-        if (rtdbData.players?.length) setPlayers(rtdbData.players);
-        if (rtdbData.courtMasters?.length) setCourtMasters(rtdbData.courtMasters);
-        if (rtdbData.sessionManagers?.length) setSessionManagers(rtdbData.sessionManagers);
-        if (rtdbData.weeklySessions?.length) {
-          setWeeklySessions(rtdbData.weeklySessions);
-          setWeeklyMembersMap(rtdbData.weeklyMembersMap);
-          setWeeklyCourtsMap(rtdbData.weeklyCourtsMap);
+        setPlayers(rtdbData.players || []);
+        setCourtMasters(rtdbData.courtMasters || []);
+        setSessionManagers(rtdbData.sessionManagers || []);
+        setWeeklySessions(rtdbData.weeklySessions || []);
+        setWeeklyMembersMap(rtdbData.weeklyMembersMap || {});
+        setWeeklyCourtsMap(rtdbData.weeklyCourtsMap || {});
+        setSessions(rtdbData.sessions || []);
+        setAllCourtsMap(rtdbData.allCourtsMap || {});
+        setAllMatchesMap(rtdbData.allMatchesMap || {});
+        setAllJoinsMap(rtdbData.allJoinsMap || {});
+        const active = rtdbData.sessions?.find((s) => s.isActive || s.status === 'Active' || s.status === 'Setting Up');
+        if (active) {
+          setActiveCourts(rtdbData.allCourtsMap[active.id] || []);
+          setActiveJoins(rtdbData.allJoinsMap[active.id] || []);
+          setActiveMatches(rtdbData.allMatchesMap[active.id] || []);
+        } else {
+          setActiveCourts([]);
+          setActiveJoins([]);
+          setActiveMatches([]);
         }
-        if (rtdbData.sessions?.length) {
-          setSessions(rtdbData.sessions);
-          setAllCourtsMap(rtdbData.allCourtsMap);
-          setAllMatchesMap(rtdbData.allMatchesMap);
-          setAllJoinsMap(rtdbData.allJoinsMap);
-          const active = rtdbData.sessions.find((s) => s.isActive || s.status === 'Active' || s.status === 'Setting Up');
-          if (active) {
-            setActiveCourts(rtdbData.allCourtsMap[active.id] || []);
-            setActiveJoins(rtdbData.allJoinsMap[active.id] || []);
-            setActiveMatches(rtdbData.allMatchesMap[active.id] || []);
-          }
-        }
+        loadedClubIdRef.current = currentClubId;
       }
     }).catch((err) => console.warn('Realtime DB initial load notice:', err));
 
@@ -245,50 +274,68 @@ export const App: React.FC = () => {
     const clubRef = ref(rtdb, `clubs/${currentClubId}`);
 
     const unsubRtdb = onValue(clubRef, (snapshot) => {
+      if (isCancelled) return;
       if (snapshot.exists()) {
         const raw = snapshot.val();
         const parsed = parseRtdbClubData(raw, currentClubId);
         if (parsed) {
           if (parsed.clubDetails) setClubDetails(parsed.clubDetails);
-          if (parsed.players.length > 0) setPlayers(parsed.players);
-          if (parsed.courtMasters.length > 0) setCourtMasters(parsed.courtMasters);
-          if (parsed.sessionManagers.length > 0) setSessionManagers(parsed.sessionManagers);
-          if (parsed.weeklySessions.length > 0) {
-            setWeeklySessions(parsed.weeklySessions);
-            setWeeklyMembersMap(parsed.weeklyMembersMap);
-            setWeeklyCourtsMap(parsed.weeklyCourtsMap);
-          }
-          if (parsed.sessions.length > 0) {
-            setSessions(parsed.sessions);
-            setAllCourtsMap(parsed.allCourtsMap);
-            setAllMatchesMap(parsed.allMatchesMap);
-            setAllJoinsMap(parsed.allJoinsMap);
+          setPlayers(parsed.players || []);
+          setCourtMasters(parsed.courtMasters || []);
+          setSessionManagers(parsed.sessionManagers || []);
+          setWeeklySessions(parsed.weeklySessions || []);
+          setWeeklyMembersMap(parsed.weeklyMembersMap || {});
+          setWeeklyCourtsMap(parsed.weeklyCourtsMap || {});
+          setSessions(parsed.sessions || []);
+          setAllCourtsMap(parsed.allCourtsMap || {});
+          setAllMatchesMap(parsed.allMatchesMap || {});
+          setAllJoinsMap(parsed.allJoinsMap || {});
 
-            // Active session subcollections
-            const currActive = parsed.sessions.find((s) => s.isActive || s.status === 'Active' || s.status === 'Setting Up');
-            if (currActive) {
-              setActiveCourts(parsed.allCourtsMap[currActive.id] || []);
-              setActiveJoins(parsed.allJoinsMap[currActive.id] || []);
-              setActiveMatches(parsed.allMatchesMap[currActive.id] || []);
-            } else {
-              setActiveCourts([]);
-              setActiveJoins([]);
-              setActiveMatches([]);
-            }
+          // Active session subcollections
+          const currActive = parsed.sessions?.find((s) => s.isActive || s.status === 'Active' || s.status === 'Setting Up');
+          if (currActive) {
+            setActiveCourts(parsed.allCourtsMap[currActive.id] || []);
+            setActiveJoins(parsed.allJoinsMap[currActive.id] || []);
+            setActiveMatches(parsed.allMatchesMap[currActive.id] || []);
+          } else {
+            setActiveCourts([]);
+            setActiveJoins([]);
+            setActiveMatches([]);
           }
+          loadedClubIdRef.current = currentClubId;
           setIsRealtimeConnected(true);
         }
+      } else {
+        // Snapshot does not exist in RTDB (new club with zero existing records)
+        // Keep collections strictly empty/blank. Never populate with fallback or other club's data.
+        setPlayers([]);
+        setCourtMasters([]);
+        setSessionManagers([]);
+        setWeeklySessions([]);
+        setWeeklyMembersMap({});
+        setWeeklyCourtsMap({});
+        setSessions([]);
+        setActiveCourts([]);
+        setActiveJoins([]);
+        setActiveMatches([]);
+        setAllCourtsMap({});
+        setAllMatchesMap({});
+        setAllJoinsMap({});
+        loadedClubIdRef.current = currentClubId;
+        setIsRealtimeConnected(true);
       }
     }, (error) => {
+      if (isCancelled) return;
       console.warn('[RTDB Listener Note]:', error);
       // Even if RTDB listener reports permission/connection issue, keep app functional
       setIsRealtimeConnected(true);
     });
 
     return () => {
+      isCancelled = true;
       unsubRtdb();
     };
-  }, [currentClubId]);
+  }, [currentClubId, clearClubState]);
 
   // 3. User Role & Manager Resolution
   useEffect(() => {
@@ -311,7 +358,10 @@ export const App: React.FC = () => {
       sessionStorage.setItem('badminton_session_role', 'CLUB_MANAGER');
       sessionStorage.removeItem('badminton_session_manager_id');
     } else {
-      const matched = sessionManagers.find((m) => m.email && m.email.trim().toLowerCase() === cleanEmail);
+      const matched = sessionManagers.find((m) => 
+        (cleanEmail && m.email && m.email.trim().toLowerCase() === cleanEmail) ||
+        (currentUser?.uid && (m.authUid === currentUser.uid || m.uid === currentUser.uid))
+      );
       if (matched) {
         setCurrentUserRole('SESSION_MANAGER');
         setCurrentManagerId(matched.id);
@@ -393,6 +443,7 @@ export const App: React.FC = () => {
       const clubs = await findClubsForUser(cleanEmail, authUser?.uid || auth.currentUser?.uid);
       if (clubs.length === 1) {
         const target = clubs[0];
+        clearClubState();
         setCurrentClubId(target.clubId);
         sessionStorage.setItem('badminton_session_user', cleanEmail);
         sessionStorage.setItem('badminton_session_club_id', target.clubId);
@@ -422,6 +473,7 @@ export const App: React.FC = () => {
           const ownerClubId = `club_${authUser.uid}`;
           const snap = await getRtdb(ref(rtdb, `clubs/${ownerClubId}/details`));
           if (snap.exists()) {
+            clearClubState();
             setCurrentClubId(ownerClubId);
             setCurrentUserRole('CLUB_MANAGER');
             sessionStorage.setItem('badminton_session_user', cleanEmail);
@@ -441,6 +493,7 @@ export const App: React.FC = () => {
   };
 
   const handleSelectClub = (assoc: UserClubAssociation) => {
+    clearClubState();
     setCurrentClubId(assoc.clubId);
     sessionStorage.setItem('badminton_session_user', assoc.email);
     sessionStorage.setItem('badminton_session_club_id', assoc.clubId);
@@ -527,6 +580,8 @@ export const App: React.FC = () => {
         console.warn('RTDB register index notice:', err);
       }
 
+      // Clear state before switching to new tenant
+      clearClubState();
       setCurrentClubId(newClubId);
       setClubDetails(newClub);
       sessionStorage.setItem('badminton_session_user', email);
@@ -541,22 +596,19 @@ export const App: React.FC = () => {
   const handleSignOut = async () => {
     sessionStorage.removeItem('badminton_session_user');
     sessionStorage.removeItem('badminton_session_club_id');
+    sessionStorage.removeItem('badminton_session_role');
+    sessionStorage.removeItem('badminton_session_manager_id');
     try {
       await signOut(auth);
     } catch (e) {
       console.warn('Sign out notice:', e);
     }
+    clearClubState();
     setCurrentUser(null);
     setCurrentClubId(null);
-    setClubDetails(null);
-    setPlayers([]);
-    setCourtMasters([]);
-    setSessionManagers([]);
-    setWeeklySessions([]);
-    setSessions([]);
-    setActiveCourts([]);
-    setActiveJoins([]);
-    setActiveMatches([]);
+    setCurrentUserRole('CLUB_MANAGER');
+    setCurrentManagerId(null);
+    setCurrentManagerName(null);
     setActiveTab('SETUP');
   };
 
@@ -699,11 +751,20 @@ export const App: React.FC = () => {
     const cleanEmail = email.trim();
     if (!cleanEmail) return { success: false, message: 'Email address is required' };
 
+    // 1. Detect existing Firebase Authentication user or create if new
+    const authResult = await createOrReuseSessionManagerAuthUser(cleanEmail);
+    if (!authResult.success) {
+      return authResult;
+    }
+
+    const assignedUid = authResult.uid || undefined;
     const nextId = sessionManagers.length > 0 ? Math.max(...sessionManagers.map((m) => m.id)) + 1 : 1;
     const newManager: SessionManagerEntity = {
       id: nextId,
       name: name.trim(),
       email: cleanEmail,
+      authUid: assignedUid,
+      uid: assignedUid,
       inviteStatus: 'EMAIL_SENT',
       createdAt: Date.now()
     };
@@ -711,13 +772,15 @@ export const App: React.FC = () => {
     // Optimistic state update
     setSessionManagers((prev) => [...prev, newManager]);
 
-    // Realtime Database
+    // Realtime Database: persist manager with its Authentication UID
     try {
       const smRef = ref(rtdb, `clubs/${currentClubId}/session_managers/manager_${nextId}`);
       await setRtdb(smRef, {
         id: `manager_${nextId}`,
         name: name.trim(),
         email: cleanEmail,
+        authUid: assignedUid ?? null,
+        uid: assignedUid ?? null,
         inviteStatus: 'EMAIL_SENT',
         createdAt: newManager.createdAt
       });
@@ -725,7 +788,7 @@ export const App: React.FC = () => {
       console.warn('RTDB add manager note:', e);
     }
 
-    // Index in user_club_index
+    // Index in user_club_index with UID association
     try {
       await registerUserClubAssociation({
         email: cleanEmail,
@@ -734,6 +797,7 @@ export const App: React.FC = () => {
         role: 'SESSION_MANAGER',
         managerId: nextId,
         managerName: name.trim(),
+        ownerUid: assignedUid ?? null,
         venue: clubDetails?.venue || '',
         updatedAt: Date.now()
       });
@@ -741,8 +805,6 @@ export const App: React.FC = () => {
       console.warn('User club index note:', e);
     }
 
-    // Trigger Firebase Auth user creation and password reset email
-    const authResult = await createSessionManagerAuthUser(cleanEmail);
     return authResult;
   };
 
@@ -771,15 +833,26 @@ export const App: React.FC = () => {
   const handleDeleteSessionManager = async (managerId: number) => {
     if (currentUserRole !== 'CLUB_MANAGER') return;
     if (!currentClubId) return;
+    const targetManager = sessionManagers.find((m) => m.id === managerId);
+
     // Optimistic state update
     setSessionManagers((prev) => prev.filter((m) => m.id !== managerId));
 
-    // Realtime Database
+    // Realtime Database: remove manager record from the club
     try {
       const smRef = ref(rtdb, `clubs/${currentClubId}/session_managers/manager_${managerId}`);
       await removeRtdb(smRef);
     } catch (e) {
       console.warn('RTDB delete manager note:', e);
+    }
+
+    // Remove club association from user_club_index (Auth user remains in Firebase Auth and RTDB auth_users)
+    if (targetManager?.email) {
+      try {
+        await removeUserClubAssociation(targetManager.email, currentClubId);
+      } catch (e) {
+        console.warn('RTDB remove user_club_index note:', e);
+      }
     }
   };
 
@@ -1004,9 +1077,9 @@ export const App: React.FC = () => {
     if (!currentClubId) return;
     const now = Date.now();
 
-    // Check played/completed matches
+    // Check played/completed matches (excluding 0-0 / unplayed matches)
     const currentMatches = allMatchesMap[sessionId] || activeMatches || [];
-    const gamesPlayedCount = currentMatches.filter((m) => m.endTime != null || m.winnerTeam != null).length;
+    const gamesPlayedCount = currentMatches.filter(isMatchValidAndCounted).length;
 
     if (gamesPlayedCount === 0) {
       // Requirement 6: If there are no games played on any session and session was ended then don't record that session on history tab
@@ -1221,6 +1294,14 @@ export const App: React.FC = () => {
 
   const handleFinishMatch = async (matchId: number, teamAScore: number, teamBScore: number, winner: 'A' | 'B') => {
     if (!activeSession || !currentClubId) return;
+
+    // Safety guard: 0-0 match indicates the game was not played or should not be counted.
+    // Do not record the game, exclude from all metrics, and do not persist as completed 0-0 match.
+    if (teamAScore === 0 && teamBScore === 0) {
+      await handleCancelMatch(matchId);
+      return;
+    }
+
     const targetMatch = activeMatches.find((m) => m.id === matchId);
     const courtId = targetMatch?.courtId;
     const now = Date.now();
@@ -1746,6 +1827,25 @@ export const App: React.FC = () => {
         onToggleTheme={handleToggleTheme}
       />
 
+      {/* Missing Secrets / Configuration Banner */}
+      {!isFirebaseConfigured && (
+        <div className="bg-amber-500/10 border-b border-amber-500/30 px-4 py-2.5 text-amber-200 text-xs">
+          <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="font-bold uppercase tracking-wider bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded text-[10px]">
+                Firebase Secrets Required
+              </span>
+              <span>
+                Missing environment configuration: <code className="font-mono text-amber-300">{missingFirebaseConfigKeys.join(', ')}</code>.
+              </span>
+            </div>
+            <span className="text-[11px] text-amber-400/80">
+              Configure these in Google AI Studio Settings &gt; Secrets or your environment.
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
         <ErrorBoundary onReset={() => setActiveTab('CLUB')}>
@@ -1875,8 +1975,13 @@ export const App: React.FC = () => {
 
       {/* Mobile QR Modal */}
       {isQRModalOpen && (
-        <MobileQRModal onClose={() => setIsQRModalOpen(false)} />
+        <MobileQRModal 
+          onClose={() => setIsQRModalOpen(false)} 
+        />
       )}
+
+      {/* Offline Connectivity Indicator */}
+      <OfflineIndicator />
 
     </div>
   );

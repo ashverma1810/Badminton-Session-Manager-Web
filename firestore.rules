@@ -1,8 +1,85 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSuperAdmin() {
+      return isSignedIn() && request.auth.token.email == "Ashish.Verma.UK@gmail.com";
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128;
+    }
+
+    // Default deny-all catch-all for unmatched documents
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
+    }
+
+    // Club root document: clubs/{clubId}
+    match /clubs/{clubId} {
+      // Anyone can read club details for display/spectator mode
+      allow read: if true;
+
+      // Creation: Authenticated user creating a new club entity
+      allow create: if isSignedIn() && isValidId(clubId);
+
+      // Updates & deletion: Must be authenticated and either owner or super admin
+      allow update, delete: if isSignedIn() && (
+        isSuperAdmin() ||
+        resource.data.ownerId == request.auth.uid ||
+        request.resource.data.ownerId == request.auth.uid
+      );
+
+      // Members roster subcollection: clubs/{clubId}/members/{memberId}
+      match /members/{memberId} {
+        allow read: if true;
+        allow write: if isSignedIn();
+      }
+
+      // Court Master subcollection: clubs/{clubId}/court_master/{courtId}
+      match /court_master/{courtId} {
+        allow read: if true;
+        allow write: if isSignedIn();
+      }
+
+      // Session Managers subcollection: clubs/{clubId}/session_managers/{managerId}
+      match /session_managers/{managerId} {
+        allow read: if true;
+        allow write: if isSignedIn();
+      }
+
+      // Weekly Session Presets: clubs/{clubId}/weekly_sessions/{weeklyId}
+      match /weekly_sessions/{weeklyId} {
+        allow read: if true;
+        allow write: if isSignedIn();
+
+        match /{subcollection=**} {
+          allow read: if true;
+          allow write: if isSignedIn();
+        }
+      }
+
+      // Active / Archived Sessions: clubs/{clubId}/sessions/{sessionId}
+      match /sessions/{sessionId} {
+        allow read: if true;
+        allow write: if isSignedIn();
+
+        // Subcollections: courts, session_players, matches
+        match /{subcollection=**} {
+          allow read: if true;
+          allow write: if isSignedIn();
+        }
+      }
+    }
+
+    // User club associations and private profile mapping
+    match /users/{userId} {
+      allow read, write: if isSignedIn() && (request.auth.uid == userId || isSuperAdmin());
     }
   }
 }

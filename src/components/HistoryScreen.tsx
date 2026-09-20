@@ -31,7 +31,7 @@ import type {
   WeeklySessionEntity,
   PlayerStats 
 } from '../types';
-import { StatsCalculator, ReportExporter } from '../utils/badmintonLogic';
+import { StatsCalculator, ReportExporter, isMatchValidAndCounted } from '../utils/badmintonLogic';
 import { MemberPerformanceModal } from './MemberPerformanceModal';
 import { TeamPairRankingView } from './TeamPairRankingView';
 
@@ -134,12 +134,8 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
     return cleaned || trimmed;
   };
 
-  // Helper to determine if a match has an actual recorded score
-  const hasRecordedScore = (m: MatchEntity) => {
-    const hasPoints = m.teamAScore != null && m.teamBScore != null && (m.teamAScore > 0 || m.teamBScore > 0);
-    const hasWinner = m.winnerTeam != null;
-    return hasPoints || hasWinner;
-  };
+  // Helper to determine if a match has an actual recorded score (0-0 excluded)
+  const hasRecordedScore = (m: MatchEntity) => isMatchValidAndCounted(m);
 
   // Requirement 4: Completed/Ended Sessions with at least one match having a recorded score
   const completedSessions = useMemo(() => {
@@ -476,7 +472,7 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
           </div>
           <div>
             <h2 className="text-base font-black text-black dark:text-slate-100">
-              Session History & Leaderboards
+              Performance & Leaderboards
             </h2>
             <p className="text-xs text-slate-800 dark:text-slate-400 font-bold">
               Historical match records, weekly session rankings, and lifetime club standings

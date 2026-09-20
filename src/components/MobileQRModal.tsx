@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
-import { X, Smartphone, ShieldCheck, Copy, Check } from 'lucide-react';
-import { DEFAULT_CLUB_ID } from '../lib/firebase';
+import { X, Smartphone, Copy, Check } from 'lucide-react';
 
 interface MobileQRModalProps {
   onClose: () => void;
@@ -76,11 +75,6 @@ export const MobileQRModal: React.FC<MobileQRModalProps> = ({ onClose }) => {
             {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
             <span>{copied ? 'Copied' : 'Copy'}</span>
           </button>
-        </div>
-
-        <div className="text-[10px] text-slate-400 flex items-center justify-center gap-1">
-          <ShieldCheck className="w-3.5 h-3.5 text-indigo-400" />
-          <span>Tenant Scope ID: <strong className="text-slate-200">{DEFAULT_CLUB_ID}</strong></span>
         </div>
       </div>
     </div>

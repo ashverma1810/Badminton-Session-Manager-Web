@@ -7,6 +7,7 @@ import type {
   SessionEntity, 
   ClubEntity 
 } from '../types';
+import { ClubLogo } from './ClubLogo';
 
 interface FullscreenCourtMonitorProps {
   onClose: () => void;
@@ -54,8 +55,8 @@ export const FullscreenCourtMonitor: React.FC<FullscreenCourtMonitorProps> = ({
       {/* Top TV Bar */}
       <div className="flex items-center justify-between pb-4 border-b border-slate-800">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-sky-600 flex items-center justify-center text-xl font-bold">
-            🏸
+          <div className="h-10 aspect-[3/2] rounded-xl overflow-hidden shadow-md border border-slate-700 bg-white flex items-center justify-center p-0.5 shrink-0">
+            <ClubLogo className="w-full h-full object-contain" />
           </div>
           <div>
             <h1 className="text-xl font-black tracking-tight text-slate-100">

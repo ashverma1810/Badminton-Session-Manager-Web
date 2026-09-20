@@ -5,10 +5,13 @@ import {
   Calendar, 
   PlayCircle, 
   History, 
+  TrendingUp,
   Sun, 
   Moon
 } from 'lucide-react';
 import type { ClubEntity, SessionEntity } from '../types';
+import { ClubLogo } from './ClubLogo';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface NavbarProps {
   activeTab: 'SETUP' | 'CLUB' | 'LIVE' | 'HISTORY';
@@ -31,7 +34,6 @@ export const Navbar: React.FC<NavbarProps> = ({
   theme,
   onToggleTheme,
 }) => {
-  const clubName = clubDetails?.name || 'Badminton Club';
   const themeColor = clubDetails?.themeColorHex || '#0284C7';
   const isDark = theme === 'dark';
 
@@ -47,36 +49,41 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* Brand & Club Info */}
           <div className="flex items-center gap-3">
             <div 
-              className="w-10 h-10 rounded-xl flex items-center justify-center text-white shadow-lg font-black text-lg transition-transform hover:scale-105 select-none"
-              style={{ backgroundColor: themeColor }}
+              className="h-10 aspect-[3/2] rounded-xl overflow-hidden shadow-md border border-slate-200 dark:border-slate-800 transition-transform hover:scale-105 select-none shrink-0 bg-white flex items-center justify-center p-0.5"
             >
-              🏸
+              <ClubLogo className="w-full h-full object-contain" />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className={`text-base sm:text-lg font-black tracking-tight ${
+            <div className="flex items-center gap-2.5">
+              {/* Brand Name & Tagline Box strictly matched in width */}
+              <div className="inline-flex flex-col w-fit">
+                <h1 className={`text-base sm:text-lg font-black tracking-tight leading-tight whitespace-nowrap ${
                   isDark ? 'text-slate-100' : 'text-slate-950'
                 }`}>
-                  {clubName}
+                  Shuttler Club
                 </h1>
-                {activeSession && (
-                  <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-bold ${
-                    activeSession.status === 'Active' 
-                      ? (isDark ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border border-emerald-200') 
-                      : (isDark ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'bg-amber-50 text-amber-700 border border-amber-200')
-                  }`}>
-                    <span className={`w-1.5 h-1.5 rounded-full ${
-                      activeSession.status === 'Active' ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'
-                    }`} />
-                    {activeSession.status === 'Active' ? 'Active' : 'Setup'}
-                  </span>
-                )}
+                <div className={`flex items-center justify-between w-full text-[7.5px] sm:text-[8px] font-bold uppercase select-none leading-none pt-0.5 ${
+                  isDark ? 'text-slate-400' : 'text-slate-500'
+                }`}>
+                  <span>PLAY</span>
+                  <span className="text-sky-500 font-black">•</span>
+                  <span>CONNECT</span>
+                  <span className="text-sky-500 font-black">•</span>
+                  <span>BELONG</span>
+                </div>
               </div>
-              <p className={`text-[11px] hidden sm:block ${
-                isDark ? 'text-slate-400' : 'text-slate-500'
-              }`}>
-                {clubDetails?.venue || 'Badminton Session & Court Manager'}
-              </p>
+
+              {activeSession && (
+                <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                  activeSession.status === 'Active' 
+                    ? (isDark ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border border-emerald-200') 
+                    : (isDark ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'bg-amber-50 text-amber-700 border border-amber-200')
+                }`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${
+                    activeSession.status === 'Active' ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'
+                  }`} />
+                  {activeSession.status === 'Active' ? 'Active' : 'Setup'}
+                </span>
+              )}
             </div>
           </div>
 
@@ -129,13 +136,16 @@ export const Navbar: React.FC<NavbarProps> = ({
                   : (isDark ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/50' : 'text-slate-500 hover:text-slate-950 hover:bg-slate-200/50')
               }`}
             >
-              <History className="w-4 h-4 text-amber-500" />
-              <span>History</span>
+              <TrendingUp className="w-4 h-4 text-amber-500" />
+              <span>Performance</span>
             </button>
           </nav>
 
           {/* Quick Actions in Top Right Corner */}
           <div className="flex items-center gap-2.5">
+            {/* PWA Install Button */}
+            <PWAInstallButton />
+
             {/* Toggle Light / Dark Mode */}
             <button
               type="button"
@@ -218,8 +228,8 @@ export const Navbar: React.FC<NavbarProps> = ({
               activeTab === 'HISTORY' ? 'text-amber-500' : (isDark ? 'text-slate-400' : 'text-slate-600')
             }`}
           >
-            <History className="w-4 h-4" />
-            <span>History</span>
+            <TrendingUp className="w-4 h-4" />
+            <span>Performance</span>
           </button>
         </div>
 

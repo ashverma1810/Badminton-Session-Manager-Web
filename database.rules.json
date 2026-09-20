@@ -1,0 +1,60 @@
+{
+  "rules": {
+    "clubs": {
+      "$clubId": {
+        ".read": true,
+        ".write": "auth != null",
+        "details": {
+          ".read": true,
+          ".write": "auth != null"
+        },
+        "members": {
+          ".read": true,
+          ".write": "auth != null"
+        },
+        "session_managers": {
+          ".read": true,
+          ".write": "auth != null"
+        },
+        "court_master": {
+          ".read": true,
+          ".write": "auth != null"
+        },
+        "weekly_sessions": {
+          ".read": true,
+          ".write": "auth != null"
+        },
+        "sessions": {
+          "$sessionId": {
+            ".read": true,
+            ".write": "auth != null",
+            "matches": {
+              ".read": true,
+              ".write": "auth != null"
+            },
+            "courts": {
+              ".read": true,
+              ".write": "auth != null"
+            },
+            "session_players": {
+              ".read": true,
+              ".write": "auth != null"
+            }
+          }
+        }
+      }
+    },
+    "user_club_index": {
+      "$userHash": {
+        ".read": "auth != null",
+        ".write": "auth != null"
+      }
+    },
+    "auth_users": {
+      "$userHash": {
+        ".read": "auth != null",
+        ".write": "auth != null"
+      }
+    }
+  }
+}

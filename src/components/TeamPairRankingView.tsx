@@ -22,6 +22,7 @@ import type {
   TeamPairStats, 
   WeeklySessionEntity 
 } from '../types';
+import { isMatchValidAndCounted } from '../utils/badmintonLogic';
 
 interface TeamPairRankingViewProps {
   sessions: SessionEntity[];
@@ -82,7 +83,7 @@ export const TeamPairRankingView: React.FC<TeamPairRankingViewProps> = ({
       const sessionName = sess.name || 'Session';
 
       matches.forEach((m) => {
-        if (!m || m.endTime == null || m.teamAScore == null || m.teamBScore == null) return;
+        if (!isMatchValidAndCounted(m)) return;
 
         const aScore = m.teamAScore ?? 0;
         const bScore = m.teamBScore ?? 0;

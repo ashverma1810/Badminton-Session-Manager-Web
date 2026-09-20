@@ -67,6 +67,24 @@ This specification incorporates the sequential functional enhancements, governan
   - **Pulsing Green**: Authenticated and synchronized with Firebase Realtime Database.
   - **Solid Red**: Logged out or disconnected from the cloud.
 
+### 2.5 Session Manager User Lifecycle & UID Reuse Directive
+- **Prompt Directive:** *"Review and fix the Session Manager user lifecycle between Firebase Authentication and Firebase Realtime Database. Currently, when a Session Manager is created, the application correctly creates the user in Firebase Authentication and stores the corresponding Session Manager record in Realtime Database. However, when the Session Manager is deleted, only the Realtime Database record is removed while the Firebase Authentication user remains. If the same Session Manager is later recreated using the same email address, the application should detect that the Firebase Authentication account already exists and reuse its existing UID instead of attempting to create a new Authentication user/account."*
+- **Specification:**
+  - Non-destructive account creation and de-provisioning.
+  - Persistent identity registry maintained at `/auth_users/{sanitizedEmail}`.
+  - Upon adding a Session Manager, the system queries the identity registry and Firebase Auth.
+  - If the user account already exists, the application reuses the existing UID without crashing or attempting a conflicting account creation.
+  - Deleting a Session Manager removes only their club-specific permissions and record in `/clubs/{clubId}/session_managers/`, preserving the underlying Firebase Auth credentials for future re-linking or other club duties.
+
+### 2.6 Strict Multi-Tenant Data Isolation Directive
+- **Prompt Directive:** *"When registering or creating a new club, enforce strict data isolation between clubs. All club-specific data — including members, sessions, leaderboards, session managers, weekly sessions, and any other club-related records — must be loaded only for the currently selected/registered Club ID. If the new club has no existing data, the relevant screens and collections must remain empty/blank. Do not populate them with default, fallback, cached, previously loaded, or existing data belonging to another club. Under no circumstances should the application assume that, because data does not exist for the current club, it should retrieve or display data from another club. Each club must be treated as a completely separate entity/tenant, with all reads, writes, updates, deletes, real-time listeners, local/offline cache, and synchronization operations scoped to the correct Club ID. Also ensure that when switching between clubs, any previously loaded club data and active listeners are cleared before loading the newly selected club's data."*
+- **Specification:**
+  - Strict tenant scoping: all data queries, writes, and real-time synchronization strictly bound to `currentClubId`.
+  - Zero cross-club data leakage: all collections (`players`, `courtMasters`, `sessionManagers`, `weeklySessions`, `sessions`, `activeCourts`, `activeJoins`, `activeMatches`, and lookup maps) are completely flushed and reset synchronously before any new club is loaded.
+  - Blank initial state: newly created clubs or clubs without records initialize with 100% empty collections; no sample or fallback data is ever injected.
+  - Isolated local storage: cache keys are strictly scoped (`badminton_club_state_${clubId}`) and validated against the active `clubId`. Mismatched cached entries are discarded.
+  - Active listener cancellation: prior Firebase Realtime Database listeners are systematically detached upon club switch or logout to prevent stale updates.
+
 ---
 
 ## 3. User Roles & Permission Matrix (RBAC)
@@ -111,9 +129,13 @@ This specification incorporates the sequential functional enhancements, governan
   - Name, gender (Male / Female for doubles categorization).
   - Pay-As-You-Go (PAYG) flag vs. season subscription member.
   - Search filter and member count metrics.
-- **FR-1.4 Session Manager Administration**:
-  - Email, display name, invitation status (`INVITED`, `ACTIVE`, `EMAIL_SENT`).
-  - Automated Firebase Auth user creation or password reset dispatch.
+- **FR-1.4 Session Manager Administration & Lifecycle**:
+  - Email, display name, invitation status (`INVITED`, `ACTIVE`, `EMAIL_SENT`), and linked Authentication UID (`authUid`).
+  - Automated Firebase Auth user creation on a secondary app instance or password reset dispatch.
+  - **Account Lifecycle & UID Reuse**:
+    - When a Session Manager is deleted, only the club's Realtime Database record (`/clubs/{clubId}/session_managers/manager_{id}`) and user club index (`/user_club_index/{sanitizedEmail}/{clubId}`) are removed. The Firebase Authentication user and the persistent `/auth_users/{sanitizedEmail}` registry entry remain intact.
+    - When a Session Manager is subsequently recreated with the same email address, the system automatically detects the existing Firebase Authentication account from `/auth_users` or authentication scan, and **reuses the existing UID** instead of attempting a duplicate user creation.
+    - A password reset link is re-dispatched to the manager, ensuring immediate access to the club without duplicate account generation.
   - Hard constraint: Session managers cannot add or delete other session managers.
 
 ### Module 2: Weekly Session Templates & Scheduling
@@ -222,6 +244,9 @@ ClubEntity (1)
 - [x] Session Managers restricted from adding/deleting session managers.
 - [x] Complete light mode color scheme implemented per specification table.
 - [x] 10% grey `#e6e8ec` tiles with Black and Dark Grey high-contrast text implemented for Team Pair Ranking & Session History.
+- [x] Session Manager user lifecycle with persistent UID registry and duplicate creation prevention.
+- [x] Strict multi-tenant data isolation, synchronous state flushing, and zero cross-club leakage.
+- [x] New club blank-state initialization with no fallback or unsolicited sample data.
 - [x] Real-time Firebase synchronization with green/red connectivity indicator.
 - [x] Doubles-Aware Ranking Model and Fair Match Allocation operational.
 - [x] PDF export and Web Audio synthesizer functioning without external assets.

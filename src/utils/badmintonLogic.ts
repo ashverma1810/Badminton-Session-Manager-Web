@@ -87,6 +87,23 @@ export const soundEngine = new SoundEngine();
 // 5. Partner adjustment (10% weight): Weaker partner gains more on win, stronger shoulders more on loss
 // 6. Attendance/Activity (5% weight): Inactivity decay starts after 4 weeks (28 days)
 
+/**
+ * Helper to determine whether a match was actually played with valid recorded scores.
+ * A 0-0 match indicates the game was not played or should not be counted.
+ * It is excluded from all player statistics, game counts, leaderboard calculations,
+ * averages, ratings, and performance metrics.
+ */
+export function isMatchValidAndCounted(m: MatchEntity | null | undefined): boolean {
+  if (!m) return false;
+  if (m.endTime == null && m.winnerTeam == null) return false;
+  if (m.teamAScore == null || m.teamBScore == null) return false;
+  // If no score has been entered or both scores are 0-0, treat as not played / do not count
+  const scoreA = m.teamAScore ?? 0;
+  const scoreB = m.teamBScore ?? 0;
+  if (scoreA === 0 && scoreB === 0) return false;
+  return true;
+}
+
 export const StatsCalculator = {
   calculatePlayerStats(
     players: PlayerEntity[],
@@ -95,9 +112,7 @@ export const StatsCalculator = {
     courtCount = 0
   ): PlayerStats[] {
     const safeMatches = matches || [];
-    const completedMatches = safeMatches.filter(
-      (m) => m && m.endTime != null && m.teamAScore != null && m.teamBScore != null
-    );
+    const completedMatches = safeMatches.filter(isMatchValidAndCounted);
     const totalMatches = safeMatches.length;
 
     // 1. Replay matches chronologically for the Doubles-Aware Ranking Model
@@ -445,10 +460,10 @@ export const StatsCalculator = {
     courts: CourtEntity[],
     matches: MatchEntity[]
   ): SessionStats {
-    const totalGames = matches.filter((m) => m.endTime != null).length;
+    const totalGames = matches.filter(isMatchValidAndCounted).length;
     const gamesMap: Record<number, number> = {};
     courts.forEach((court) => {
-      gamesMap[court.id] = matches.filter((m) => m.courtId === court.id && m.endTime != null).length;
+      gamesMap[court.id] = matches.filter((m) => m.courtId === court.id && isMatchValidAndCounted(m)).length;
     });
 
     const startTime = session.startTime ?? Date.now();
@@ -543,7 +558,7 @@ export const FairMatchAllocation = {
     });
 
     const activeCourtCount = courts.length || 1;
-    const totalSessionMatches = matches.length;
+    const totalSessionMatches = matches.filter(isMatchValidAndCounted).length;
 
     // 3. Build Games Count Map (Actual + Effective Adjusted)
     const gamesCountMap: Record<number, number> = {};
@@ -553,7 +568,7 @@ export const FairMatchAllocation = {
       const pId = p.id;
       const completedCount = matches.filter(
         (m) =>
-          m.endTime != null &&
+          isMatchValidAndCounted(m) &&
           (m.teamAPlayer1Id === pId ||
             m.teamAPlayer2Id === pId ||
             m.teamBPlayer1Id === pId ||
@@ -572,10 +587,11 @@ export const FairMatchAllocation = {
       // Find last match index
       const playerMatches = matches.filter(
         (m) =>
-          m.teamAPlayer1Id === pId ||
-          m.teamAPlayer2Id === pId ||
-          m.teamBPlayer1Id === pId ||
-          m.teamBPlayer2Id === pId
+          isMatchValidAndCounted(m) &&
+          (m.teamAPlayer1Id === pId ||
+            m.teamAPlayer2Id === pId ||
+            m.teamBPlayer1Id === pId ||
+            m.teamBPlayer2Id === pId)
       );
       if (playerMatches.length > 0) {
         const maxMatchNum = Math.max(...playerMatches.map((m) => m.matchNumber));
@@ -589,7 +605,7 @@ export const FairMatchAllocation = {
     const partnerHistory: Record<string, number> = {};
     const opponentHistory: Record<string, number> = {};
 
-    matches.forEach((m) => {
+    matches.filter(isMatchValidAndCounted).forEach((m) => {
       // Partner History
       if (m.teamAPlayer1Id && m.teamAPlayer2Id) {
         const keyA = [m.teamAPlayer1Id, m.teamAPlayer2Id].sort((a, b) => a - b).join('-');

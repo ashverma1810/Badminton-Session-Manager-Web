@@ -1,0 +1,83 @@
+{
+  "entities": {
+    "Club": {
+      "title": "Club",
+      "description": "Top-level entity representing a badminton club with unique multi-tenant settings.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string", "maxLength": 100 },
+        "venue": { "type": "string", "maxLength": 200 },
+        "themeColorHex": { "type": "string", "maxLength": 20 },
+        "ownerId": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "targetScore": { "type": "number" },
+        "contactPerson": { "type": "string", "maxLength": 100 },
+        "description": { "type": "string", "maxLength": 500 }
+      },
+      "required": ["id", "name", "venue"]
+    },
+    "Player": {
+      "title": "Player",
+      "description": "Club member or guest registered under a specific club.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "name": { "type": "string", "maxLength": 100 },
+        "gender": { "type": "string", "enum": ["MALE", "FEMALE"] },
+        "createdAt": { "type": "number" },
+        "isPAYG": { "type": "boolean" }
+      },
+      "required": ["id", "name", "gender"]
+    },
+    "Session": {
+      "title": "Session",
+      "description": "A scheduled or live club badminton session containing courts and active matches.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "name": { "type": "string", "maxLength": 150 },
+        "type": { "type": "string", "enum": ["SINGLES", "DOUBLES", "MIXED_DOUBLES", "MULTI_TYPE"] },
+        "status": { "type": "string", "enum": ["Setting Up", "Active", "End"] },
+        "createdAt": { "type": "number" },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["id", "name", "status"]
+    },
+    "Match": {
+      "title": "Match",
+      "description": "Individual match game executed on a court during a session.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "sessionId": { "type": "number" },
+        "courtId": { "type": "number" },
+        "matchNumber": { "type": "number" },
+        "teamAPlayer1Id": { "type": "number" },
+        "teamBPlayer1Id": { "type": "number" },
+        "teamAScore": { "type": "number" },
+        "teamBScore": { "type": "number" },
+        "startTime": { "type": "number" }
+      },
+      "required": ["id", "sessionId", "courtId", "matchNumber"]
+    }
+  },
+  "firestore": {
+    "/clubs/{clubId}": {
+      "schema": "Club",
+      "description": "Primary club profile document."
+    },
+    "/clubs/{clubId}/members/{memberId}": {
+      "schema": "Player",
+      "description": "Club member roster isolated per club."
+    },
+    "/clubs/{clubId}/sessions/{sessionId}": {
+      "schema": "Session",
+      "description": "Session records isolated per club."
+    },
+    "/clubs/{clubId}/sessions/{sessionId}/matches/{matchId}": {
+      "schema": "Match",
+      "description": "Game matches recorded within a club session."
+    }
+  }
+}

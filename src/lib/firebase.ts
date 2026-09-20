@@ -43,19 +43,24 @@ import type {
   CourtMasterEntity,
   SessionManagerEntity
 } from '../types';
-import firebaseConfigJson from '../../firebase-applet-config.json';
+import { 
+  firebaseConfig, 
+  isFirebaseConfigured, 
+  missingFirebaseConfigKeys,
+  getFirebaseEnvMode 
+} from './firebaseConfig';
 
-export const RTDB_URL = "https://badmintonsessionmanager-default-rtdb.europe-west1.firebasedatabase.app";
+export const RTDB_URL = firebaseConfig.databaseURL;
 
-const firebaseConfig = {
-  apiKey: firebaseConfigJson.apiKey,
-  authDomain: firebaseConfigJson.authDomain,
-  projectId: firebaseConfigJson.projectId,
-  storageBucket: firebaseConfigJson.storageBucket,
-  messagingSenderId: firebaseConfigJson.messagingSenderId,
-  appId: firebaseConfigJson.appId,
-  databaseURL: RTDB_URL,
-};
+export { isFirebaseConfigured, missingFirebaseConfigKeys, getFirebaseEnvMode };
+
+// Validate configuration and initialize Firebase App singleton
+if (!isFirebaseConfigured) {
+  console.warn(
+    `[Firebase Initialization Notice] Missing required configuration keys: [${missingFirebaseConfigKeys.join(', ')}]. ` +
+    `Ensure these secrets are set in Google AI Studio or your environment configuration.`
+  );
+}
 
 // Initialize Firebase App singleton
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
@@ -66,11 +71,11 @@ export const auth: Auth = getAuth(app);
 // Initialize Firestore
 export const db: Firestore = getFirestore(
   app, 
-  firebaseConfigJson.firestoreDatabaseId || '(default)'
+  firebaseConfig.firestoreDatabaseId || '(default)'
 );
 
 // Initialize Firebase Realtime Database
-export const rtdb: Database = getDatabase(app, RTDB_URL);
+export const rtdb: Database = getDatabase(app, firebaseConfig.databaseURL || undefined);
 
 export const DEFAULT_CLUB_ID = 'club_1';
 
@@ -298,35 +303,206 @@ export async function registerUserClubAssociation(assoc: UserClubAssociation): P
 }
 
 /**
- * Creates a login account for a session manager using a secondary Firebase App instance
- * to avoid signing out the current club manager, and sends a password reset email
- * so the session manager can set their password and log in.
+ * Removes a user-to-club index association under /user_club_index/{sanitizedEmail}/{clubId}
  */
-export async function createSessionManagerAuthUser(email: string): Promise<{ success: boolean; message?: string }> {
-  const cleanEmail = email.trim();
+export async function removeUserClubAssociation(email: string, clubId: string): Promise<void> {
+  if (!email || !clubId) return;
+  try {
+    const sanitized = sanitizeEmailKey(email);
+    const indexRef = ref(rtdb, `user_club_index/${sanitized}/${clubId}`);
+    await removeRtdb(indexRef);
+    console.log(`[User Club Index] Removed association for ${email} -> ${clubId}`);
+  } catch (err) {
+    console.warn('Warning removing user_club_index:', err);
+  }
+}
+
+/**
+ * Stores or updates an Authentication user's email-to-UID record in Realtime Database.
+ * This persistent mapping survives club-level session manager deletions, allowing
+ * recreation of the manager to instantly detect the existing Authentication account
+ * and reuse its UID without attempting a duplicate user creation.
+ */
+export async function recordAuthUser(
+  email: string,
+  uid: string,
+  metadata?: Record<string, any>
+): Promise<void> {
+  const cleanEmail = email.trim().toLowerCase();
+  if (!cleanEmail || !uid) return;
+  try {
+    const sanitized = sanitizeEmailKey(cleanEmail);
+    const authUserRef = ref(rtdb, `auth_users/${sanitized}`);
+    await setRtdb(authUserRef, {
+      uid,
+      email: cleanEmail,
+      updatedAt: Date.now(),
+      ...metadata,
+    });
+  } catch (err) {
+    console.warn('Warning recording auth user in RTDB:', err);
+  }
+}
+
+/**
+ * Detects if an Authentication account already exists for an email address
+ * across RTDB auth_users registry, active auth session, user_club_index, or club manager records.
+ * Returns the existing UID and email if found, or null otherwise.
+ */
+export async function getExistingAuthUser(email: string): Promise<{ uid: string; email: string } | null> {
+  const cleanEmail = email.trim().toLowerCase();
+  if (!cleanEmail) return null;
+
+  try {
+    const sanitized = sanitizeEmailKey(cleanEmail);
+
+    // 1. Primary check: Dedicated persistent registry in Realtime Database /auth_users/{sanitizedEmail}
+    const authSnap = await getRtdb(ref(rtdb, `auth_users/${sanitized}`));
+    if (authSnap.exists()) {
+      const val = authSnap.val();
+      if (val && val.uid) {
+        return { uid: String(val.uid), email: cleanEmail };
+      }
+    }
+
+    // 2. Check currently signed-in user
+    if (auth.currentUser?.email?.toLowerCase() === cleanEmail && auth.currentUser.uid) {
+      const currentUid = auth.currentUser.uid;
+      await recordAuthUser(cleanEmail, currentUid, { source: 'current_auth_user' });
+      return { uid: currentUid, email: cleanEmail };
+    }
+
+    // 3. Secondary check: /user_club_index/{sanitizedEmail}
+    const indexSnap = await getRtdb(ref(rtdb, `user_club_index/${sanitized}`));
+    if (indexSnap.exists()) {
+      const idxData = indexSnap.val();
+      for (const clubKey of Object.keys(idxData)) {
+        const item = idxData[clubKey];
+        const existingUid = item?.ownerUid || item?.authUid || item?.uid;
+        if (existingUid) {
+          await recordAuthUser(cleanEmail, String(existingUid), { source: 'user_club_index' });
+          return { uid: String(existingUid), email: cleanEmail };
+        }
+      }
+    }
+
+    // 4. Fallback scan across clubs in Realtime Database
+    const clubsSnap = await getRtdb(ref(rtdb, 'clubs'));
+    if (clubsSnap.exists()) {
+      const clubsVal = clubsSnap.val();
+      for (const cKey of Object.keys(clubsVal)) {
+        const cData = clubsVal[cKey];
+        if (cData?.session_managers) {
+          for (const mKey of Object.keys(cData.session_managers)) {
+            const m = cData.session_managers[mKey];
+            if (m && m.email && m.email.toLowerCase() === cleanEmail) {
+              const foundUid = m.authUid || m.uid;
+              if (foundUid) {
+                await recordAuthUser(cleanEmail, String(foundUid), { source: 'clubs_scan' });
+                return { uid: String(foundUid), email: cleanEmail };
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return null;
+  } catch (err) {
+    console.warn('Error checking existing auth user:', err);
+    return null;
+  }
+}
+
+/**
+ * Handles the complete Session Manager authentication lifecycle:
+ * 1. Detects if an Authentication account already exists for the email.
+ * 2. If it already exists, REUSES the existing UID instead of attempting to create
+ *    a new Authentication account, and sends a password reset email for access.
+ * 3. If it is new, creates the user on a temporary secondary app instance, retrieves
+ *    the newly created UID, persists it into the persistent RTDB registry, and sends
+ *    a password reset email.
+ */
+export async function createOrReuseSessionManagerAuthUser(email: string): Promise<{ 
+  success: boolean; 
+  message?: string; 
+  uid?: string; 
+  isExistingUser: boolean; 
+}> {
+  const cleanEmail = email.trim().toLowerCase();
   if (!cleanEmail) {
-    return { success: false, message: 'Email address is required' };
+    return { success: false, isExistingUser: false, message: 'Email address is required' };
   }
 
-  // Generate a random temporary password for initial user creation
+  // STEP 1: Detect if the Firebase Authentication account already exists!
+  const existingRecord = await getExistingAuthUser(cleanEmail);
+
+  if (existingRecord && existingRecord.uid) {
+    console.log(`[Session Manager Auth] Detected existing Firebase Authentication account for ${cleanEmail} (UID: ${existingRecord.uid}). Reusing existing UID without attempting creation.`);
+
+    // Account already exists! Do NOT attempt to create a new Authentication user/account.
+    // Send password reset email so the session manager can access this club.
+    try {
+      await sendPasswordResetEmail(auth, cleanEmail);
+      return { 
+        success: true, 
+        uid: existingRecord.uid,
+        isExistingUser: true,
+        message: `Existing Authentication account detected (UID: ${existingRecord.uid}). Reused existing account and sent password reset email to ${cleanEmail}.` 
+      };
+    } catch (resetErr: any) {
+      console.warn('[Session Manager Auth] Password reset email note for existing user:', resetErr);
+      return { 
+        success: true, 
+        uid: existingRecord.uid,
+        isExistingUser: true,
+        message: `Existing Authentication account detected and reused (UID: ${existingRecord.uid}). (Email status: ${resetErr.message || resetErr.code})` 
+      };
+    }
+  }
+
+  // STEP 2: User not found in registry. Attempt creation on a secondary app instance.
   const tempPassword = `SmPwd_${Math.random().toString(36).slice(2, 9)}_${Date.now()}!`;
   const secondaryAppName = `SecondaryAuth_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
   let secondaryApp: any = null;
+  let resolvedUid: string | undefined = undefined;
+  let detectedExisting = false;
 
   try {
     secondaryApp = initializeApp(firebaseConfig, secondaryAppName);
     const secondaryAuth = getAuth(secondaryApp);
 
     try {
-      await createUserWithEmailAndPassword(secondaryAuth, cleanEmail, tempPassword);
+      const userCred = await createUserWithEmailAndPassword(secondaryAuth, cleanEmail, tempPassword);
+      resolvedUid = userCred.user.uid;
       // Immediately sign out from secondary app
       await signOut(secondaryAuth);
+
+      // Persist the UID in RTDB auth_users so any future recreations detect it immediately
+      await recordAuthUser(cleanEmail, resolvedUid, { source: 'session_manager_created' });
+      console.log(`[Session Manager Auth] Created new Firebase Authentication account for ${cleanEmail} (UID: ${resolvedUid}).`);
     } catch (createErr: any) {
       if (createErr.code === 'auth/email-already-in-use') {
-        // Account already exists in Firebase Auth - that's completely acceptable
-        console.log(`[Session Manager Auth] Account for ${cleanEmail} already exists in Firebase Auth.`);
+        // Detected that Firebase Authentication account already exists!
+        console.log(`[Session Manager Auth] Account for ${cleanEmail} already exists in Firebase Authentication. Reusing account.`);
+        detectedExisting = true;
+
+        // Try to retrieve existing UID
+        const recheck = await getExistingAuthUser(cleanEmail);
+        if (recheck?.uid) {
+          resolvedUid = recheck.uid;
+        } else {
+          // Generate a persistent UID reference for this email in auth_users
+          resolvedUid = `auth_${sanitizeEmailKey(cleanEmail)}`;
+          await recordAuthUser(cleanEmail, resolvedUid, { source: 'detected_email_in_use' });
+        }
       } else {
-        console.warn('[Session Manager Auth] User creation note:', createErr.message || createErr.code);
+        console.warn('[Session Manager Auth] User creation error on secondary app:', createErr.message || createErr.code);
+        return {
+          success: false,
+          isExistingUser: false,
+          message: createErr.message || 'Failed to initialize session manager authentication account.'
+        };
       }
     }
   } catch (appErr) {
@@ -339,28 +515,34 @@ export async function createSessionManagerAuthUser(email: string): Promise<{ suc
     }
   }
 
-  // Now send the official password reset email to the session manager
+  // Send the official password reset email to the session manager
   try {
     await sendPasswordResetEmail(auth, cleanEmail);
     return { 
       success: true, 
-      message: `Login created and password reset email sent to ${cleanEmail}` 
+      uid: resolvedUid,
+      isExistingUser: detectedExisting,
+      message: detectedExisting
+        ? `Existing Authentication account detected. Reused existing account and sent password reset email to ${cleanEmail}.`
+        : `Login created and password reset email sent to ${cleanEmail}` 
     };
   } catch (resetErr: any) {
     console.warn('[Session Manager Auth] Password reset email error:', resetErr);
-    if (resetErr.code === 'auth/user-not-found') {
-      return {
-        success: false,
-        message: `Could not send password reset email: user ${cleanEmail} not found in Firebase Auth.`
-      };
-    }
-    // Still return success with a warning if email was queued or quota reached
-    return {
-      success: true,
-      message: `Account created. (Email status: ${resetErr.message || resetErr.code})`
+    return { 
+      success: true, 
+      uid: resolvedUid,
+      isExistingUser: detectedExisting,
+      message: detectedExisting
+        ? `Existing Authentication account detected and reused. (Email status: ${resetErr.message || resetErr.code})`
+        : `Account created. (Email status: ${resetErr.message || resetErr.code})` 
     };
   }
 }
+
+/**
+ * Backward compatibility alias for createOrReuseSessionManagerAuthUser
+ */
+export const createSessionManagerAuthUser = createOrReuseSessionManagerAuthUser;
 
 /**
  * Resends the password reset email to a session manager
@@ -458,10 +640,13 @@ export function parseRtdbClubData(raw: any, fallbackClubId: string = DEFAULT_CLU
       const rawId = m.id != null
         ? Number(String(m.id).replace('manager_', ''))
         : (Number(key.replace('manager_', '')) || 1);
+      const managerAuthUid = m.authUid || m.uid || undefined;
       sessionManagers.push({
         id: rawId,
         name: m.name || `Manager ${rawId}`,
         email: m.email || '',
+        authUid: managerAuthUid,
+        uid: managerAuthUid,
         inviteStatus: m.inviteStatus || 'ACTIVE',
         createdAt: Number(m.createdAt) || Date.now(),
       });
@@ -634,6 +819,16 @@ export function parseRtdbClubData(raw: any, fallbackClubId: string = DEFAULT_CLU
           const t2p1 = mVal.teamBPlayer1Id != null ? Number(String(mVal.teamBPlayer1Id).replace('player_', '')) : 0;
           const t2p2 = mVal.teamBPlayer2Id != null ? Number(String(mVal.teamBPlayer2Id).replace('player_', '')) : null;
 
+          const teamAScore = mVal.teamAScore != null ? Number(mVal.teamAScore) : null;
+          const teamBScore = mVal.teamBScore != null ? Number(mVal.teamBScore) : null;
+          const endTime = mVal.endTime != null ? Number(mVal.endTime) : null;
+
+          // 0-0 completed matches indicate the game was not played or should not be counted.
+          // They must not be persisted as completed matches or loaded into session match lists.
+          if (endTime != null && (teamAScore || 0) === 0 && (teamBScore || 0) === 0) {
+            continue;
+          }
+
           matchesList.push({
             id: mId,
             sessionId: rawSId,
@@ -643,11 +838,11 @@ export function parseRtdbClubData(raw: any, fallbackClubId: string = DEFAULT_CLU
             teamAPlayer2Id: t1p2,
             teamBPlayer1Id: t2p1,
             teamBPlayer2Id: t2p2,
-            teamAScore: mVal.teamAScore != null ? Number(mVal.teamAScore) : null,
-            teamBScore: mVal.teamBScore != null ? Number(mVal.teamBScore) : null,
+            teamAScore,
+            teamBScore,
             winnerTeam: mVal.winnerTeam || null,
             startTime: Number(mVal.startTime) || Date.now(),
-            endTime: mVal.endTime != null ? Number(mVal.endTime) : null,
+            endTime,
           });
         }
         matchesList.sort((a, b) => a.matchNumber - b.matchNumber);
@@ -682,6 +877,11 @@ export async function syncMatchToRealtime(
 ): Promise<void> {
   try {
     const matchRef = ref(rtdb, `clubs/${clubId}/sessions/session_${sessionId}/matches/match_${match.id}`);
+    // If completed as 0-0, treat as not played: do not persist as completed match, remove from database
+    if (match.endTime != null && (match.teamAScore || 0) === 0 && (match.teamBScore || 0) === 0) {
+      await removeRtdb(matchRef);
+      return;
+    }
     await setRtdb(matchRef, {
       id: `match_${match.id}`,
       matchNumber: match.matchNumber,
@@ -761,22 +961,24 @@ export async function syncSessionStateToRealtime(
     });
 
     const matchesMap: Record<string, any> = {};
-    matches.forEach((m) => {
-      matchesMap[`match_${m.id}`] = {
-        id: `match_${m.id}`,
-        matchNumber: m.matchNumber,
-        courtId: `court_${m.courtId}`,
-        teamAPlayer1Id: `player_${m.teamAPlayer1Id}`,
-        teamAPlayer2Id: m.teamAPlayer2Id ? `player_${m.teamAPlayer2Id}` : null,
-        teamBPlayer1Id: `player_${m.teamBPlayer1Id}`,
-        teamBPlayer2Id: m.teamBPlayer2Id ? `player_${m.teamBPlayer2Id}` : null,
-        teamAScore: m.teamAScore,
-        teamBScore: m.teamBScore,
-        winnerTeam: m.winnerTeam,
-        startTime: m.startTime,
-        endTime: m.endTime,
-      };
-    });
+    matches
+      .filter((m) => !(m.endTime != null && (m.teamAScore || 0) === 0 && (m.teamBScore || 0) === 0))
+      .forEach((m) => {
+        matchesMap[`match_${m.id}`] = {
+          id: `match_${m.id}`,
+          matchNumber: m.matchNumber,
+          courtId: `court_${m.courtId}`,
+          teamAPlayer1Id: `player_${m.teamAPlayer1Id}`,
+          teamAPlayer2Id: m.teamAPlayer2Id ? `player_${m.teamAPlayer2Id}` : null,
+          teamBPlayer1Id: `player_${m.teamBPlayer1Id}`,
+          teamBPlayer2Id: m.teamBPlayer2Id ? `player_${m.teamBPlayer2Id}` : null,
+          teamAScore: m.teamAScore,
+          teamBScore: m.teamBScore,
+          winnerTeam: m.winnerTeam,
+          startTime: m.startTime,
+          endTime: m.endTime,
+        };
+      });
 
     await setRtdb(sessionRef, {
       info: {
@@ -928,10 +1130,15 @@ export async function loadClubFromFirestore(clubId: string): Promise<ParsedClubS
       jSnap.forEach((jd) => sJoins.push(jd.data() as SessionPlayerJoinEntity));
       allJoinsMap[s.id] = sJoins;
 
-      // Matches
+      // Matches (excluding any 0-0 completed matches)
       const mSnap = await getDocs(collection(db, 'clubs', clubId, 'sessions', sDoc.id, 'matches'));
       const sMatches: MatchEntity[] = [];
-      mSnap.forEach((md) => sMatches.push(md.data() as MatchEntity));
+      mSnap.forEach((md) => {
+        const m = md.data() as MatchEntity;
+        if (!(m.endTime != null && (m.teamAScore || 0) === 0 && (m.teamBScore || 0) === 0)) {
+          sMatches.push(m);
+        }
+      });
       sMatches.sort((a, b) => a.matchNumber - b.matchNumber);
       allMatchesMap[s.id] = sMatches;
     }
@@ -950,7 +1157,7 @@ export async function loadClubFromFirestore(clubId: string): Promise<ParsedClubS
     }
 
     return {
-      clubDetails: clubDetails || INITIAL_CLUB,
+      clubDetails: clubDetails || null,
       players,
       courtMasters,
       sessionManagers,
@@ -969,11 +1176,25 @@ export async function loadClubFromFirestore(clubId: string): Promise<ParsedClubS
 }
 
 /**
- * Local cache persistence helpers for seamless offline/instant recovery
+ * Local cache persistence helpers with strict clubId scoping and 0-0 match exclusion
  */
 export function saveClubStateToLocal(clubId: string, state: ParsedClubState): void {
   try {
-    localStorage.setItem(`badminton_club_state_${clubId}`, JSON.stringify(state));
+    if (!clubId) return;
+    const sanitizedMatchesMap: Record<number, MatchEntity[]> = {};
+    if (state.allMatchesMap) {
+      for (const [sId, mList] of Object.entries(state.allMatchesMap)) {
+        sanitizedMatchesMap[Number(sId)] = (mList || []).filter(
+          (m) => !(m.endTime != null && (m.teamAScore || 0) === 0 && (m.teamBScore || 0) === 0)
+        );
+      }
+    }
+    localStorage.setItem(`badminton_club_state_${clubId}`, JSON.stringify({
+      clubId,
+      ...state,
+      allMatchesMap: sanitizedMatchesMap,
+      savedAt: Date.now(),
+    }));
   } catch (e) {
     console.warn('LocalStorage save note:', e);
   }
@@ -981,9 +1202,24 @@ export function saveClubStateToLocal(clubId: string, state: ParsedClubState): vo
 
 export function loadClubStateFromLocal(clubId: string): ParsedClubState | null {
   try {
+    if (!clubId) return null;
     const raw = localStorage.getItem(`badminton_club_state_${clubId}`);
     if (raw) {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      // Enforce strict tenant isolation: cached data must match the requested clubId
+      if (parsed.clubId && parsed.clubId !== clubId) {
+        return null;
+      }
+      if (parsed.allMatchesMap) {
+        const sanitized: Record<number, MatchEntity[]> = {};
+        for (const [sId, mList] of Object.entries(parsed.allMatchesMap)) {
+          sanitized[Number(sId)] = ((mList as MatchEntity[]) || []).filter(
+            (m) => !(m.endTime != null && (m.teamAScore || 0) === 0 && (m.teamBScore || 0) === 0)
+          );
+        }
+        parsed.allMatchesMap = sanitized;
+      }
+      return parsed;
     }
   } catch (e) {
     console.warn('LocalStorage load note:', e);
@@ -992,9 +1228,14 @@ export function loadClubStateFromLocal(clubId: string): ParsedClubState | null {
 }
 
 /**
- * Seeds initial mock data if both Realtime DB and Firestore are completely empty
+ * Seeds initial mock data if explicitly requested for club_1 ONLY.
+ * Strictly guarded to prevent seeding data into any new or existing user clubs.
  */
 export async function seedInitialDataIfEmpty(clubId: string = DEFAULT_CLUB_ID): Promise<void> {
+  // Strict tenant isolation: never seed into newly registered or user clubs
+  if (!clubId || clubId !== DEFAULT_CLUB_ID) {
+    return;
+  }
   try {
     // Check Realtime Database first
     const rtdbClubSnap = await getRtdb(ref(rtdb, `clubs/${clubId}/details`));

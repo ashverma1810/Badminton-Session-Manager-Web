@@ -109,6 +109,8 @@ export interface SessionManagerEntity {
   id: number;
   name: string;
   email: string;
+  authUid?: string;
+  uid?: string;
   inviteStatus?: 'INVITED' | 'ACTIVE' | 'EMAIL_SENT';
   createdAt: number;
 }

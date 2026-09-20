@@ -1,5 +1,5 @@
 {
-  "name": "Badminton Session Manager",
+  "name": "Shuttler Club",
   "description": "Real-time badminton session, member management, team allocation, and live scorekeeping synchronized across web and mobile via Firebase.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
