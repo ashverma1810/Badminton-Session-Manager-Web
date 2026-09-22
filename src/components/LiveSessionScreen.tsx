@@ -22,7 +22,11 @@ import {
   X,
   Settings,
   BarChart3,
-  Shuffle
+  Shuffle,
+  Edit2,
+  ArrowLeftRight,
+  Search,
+  History
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import type { 
@@ -35,25 +39,42 @@ import type {
   PlayerStats,
   GameType,
   Gender,
-  CourtMasterEntity
+  CourtMasterEntity,
+  ScoreAuditLogEntity
 } from '../types';
 import { FairMatchAllocation, StatsCalculator, soundEngine, isMatchValidAndCounted } from '../utils/badmintonLogic';
 
 export function calculateWinningScore(losingScore: number, targetScore: number = 21): number {
   const maxCap = targetScore === 15 ? 20 : (targetScore === 21 ? 30 : targetScore + 9);
   if (losingScore < 0) return targetScore;
-  if (losingScore >= maxCap) return maxCap;
+  
+  // If user entered maxCap (e.g. 20 for 15-pt game, 30 for 21-pt game),
+  // which is always the winning score on a maxed-out game, system calculates losing score of maxCap - 1 (19 or 29).
+  if (losingScore >= maxCap) {
+    return maxCap - 1;
+  }
 
   // BWF Official Badminton Scoring / Deuce Rules:
   // If losingScore < targetScore - 1 (e.g. 0..13 for 15-pt game, or 0..19 for 21-pt game):
   // Winning score is targetScore (e.g. 15 or 21).
-  // If losingScore >= targetScore - 1 (e.g. 14 for 15-pt game, or 20 for 21-pt game):
+  // If losingScore >= targetScore - 1 (e.g. 14..19 for 15-pt game, or 20..29 for 21-pt game):
   // It is deuce! The winner must lead by 2 points (losingScore + 2), capped at maxCap.
   if (losingScore < targetScore - 1) {
     return targetScore;
   } else {
     return Math.min(losingScore + 2, maxCap);
   }
+}
+
+export function sanitizeScoreInput(rawVal: string, maxCap: number): string {
+  if (!rawVal) return '';
+  // Strip non-digits and any decimal components
+  const mainPart = rawVal.split('.')[0].replace(/[^0-9]/g, '');
+  if (mainPart === '') return '';
+  const num = parseInt(mainPart, 10);
+  if (isNaN(num)) return '';
+  if (num > maxCap) return maxCap.toString();
+  return num.toString();
 }
 
 interface LiveSessionScreenProps {
@@ -73,6 +94,13 @@ interface LiveSessionScreenProps {
   onTogglePlayerPause: (playerId: number) => Promise<void>;
   onAddPAYGPlayerToSession: (name: string, gender: 'MALE' | 'FEMALE') => Promise<void>;
   onSwitchMatchPlayers: (matchId: number) => Promise<void>;
+  onReplaceMatchPlayer?: (
+    matchId: number,
+    teamAPlayer1Id: number,
+    teamAPlayer2Id: number | null,
+    teamBPlayer1Id: number,
+    teamBPlayer2Id: number | null
+  ) => Promise<void>;
   onAddCourtToSession?: (name: string, gameType?: GameType) => Promise<void>;
   onDeleteCourtFromSession?: (courtId: number) => Promise<void>;
   onUpdateCourtGameType?: (courtId: number, gameType: GameType) => Promise<void>;
@@ -82,6 +110,8 @@ interface LiveSessionScreenProps {
   onAddPlayerToMaster?: (name: string, gender: Gender, isPAYG: boolean) => Promise<void>;
   onTogglePlayerPAYG?: (playerId: number, currentPAYG: boolean) => Promise<void>;
   onNavigateToSessions?: () => void;
+  onEditMatchScore?: (matchId: number, teamAScore: number, teamBScore: number, winner: 'A' | 'B') => Promise<void>;
+  auditLogs?: ScoreAuditLogEntity[];
 }
 
 export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
@@ -100,6 +130,7 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
   onTogglePlayerPause,
   onAddPAYGPlayerToSession,
   onSwitchMatchPlayers,
+  onReplaceMatchPlayer,
   onAddCourtToSession,
   onDeleteCourtFromSession,
   onUpdateCourtGameType,
@@ -109,6 +140,8 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
   onAddPlayerToMaster,
   onTogglePlayerPAYG,
   onNavigateToSessions,
+  onEditMatchScore,
+  auditLogs = [],
 }) => {
   // Main 3-Tab Structure requested: Session | Games | Stats
   const [activeTab, setActiveTab] = useState<'SESSION' | 'GAMES' | 'STATS'>(
@@ -118,9 +151,16 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
   // Rotation Sub-Tabs inside Games
   const [rotationTab, setRotationTab] = useState<'WAITING' | 'PLAYING' | 'PAUSED'>('WAITING');
   
-  // Stats Tab Sub-Toggle: Standings vs Match Records
-  const [statsView, setStatsView] = useState<'STANDINGS' | 'MATCHES'>('STANDINGS');
+  // Stats Tab Sub-Toggle: Standings vs Match Records vs Audit Logs
+  const [statsView, setStatsView] = useState<'STANDINGS' | 'MATCHES' | 'AUDIT_LOGS'>('STANDINGS');
   const [tierFilter, setTierFilter] = useState<'ALL' | 'A' | 'B' | 'C'>('ALL');
+  const [statsSearchQuery, setStatsSearchQuery] = useState<string>('');
+
+  // Edit Completed Match Score Modal
+  const [editingScoreMatch, setEditingScoreMatch] = useState<MatchEntity | null>(null);
+  const [editScoreA, setEditScoreA] = useState<string>('');
+  const [editScoreB, setEditScoreB] = useState<string>('');
+  const [editScoreError, setEditScoreError] = useState<string | null>(null);
   
   // Duration Clock
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
@@ -150,6 +190,14 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
   // End Session Confirmation Modal
   const [showEndSessionConfirm, setShowEndSessionConfirm] = useState<boolean>(false);
 
+  // Change Player on Court Modal State
+  const [editingCourtPlayer, setEditingCourtPlayer] = useState<{
+    match: MatchEntity;
+    courtName: string;
+    slotKey: 'teamAPlayer1Id' | 'teamAPlayer2Id' | 'teamBPlayer1Id' | 'teamBPlayer2Id';
+    currentPlayerId: number;
+  } | null>(null);
+
   // Manage Courts Dialog
   const [showManageCourtsModal, setShowManageCourtsModal] = useState<boolean>(false);
   const [newCourtName, setNewCourtName] = useState<string>('');
@@ -174,16 +222,23 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
     if (!activeSession) return;
     const startTime = activeSession.startTime || activeSession.createdAt || Date.now();
     const updateTimer = () => {
+      let secs = 0;
       if (activeSession.status === 'End' && activeSession.endTime) {
-        setElapsedSeconds(Math.max(0, Math.floor((activeSession.endTime - startTime) / 1000)));
+        secs = Math.max(0, Math.floor((activeSession.endTime - startTime) / 1000));
       } else {
-        setElapsedSeconds(Math.max(0, Math.floor((Date.now() - startTime) / 1000)));
+        secs = Math.max(0, Math.floor((Date.now() - startTime) / 1000));
+        // Requirement: If any session is running for more than 4 hours (14,400 seconds), end the session
+        if (activeSession.status !== 'End' && secs >= 14400) {
+          console.log('[4-Hour Limit Reached]: Session running for over 4 hours. Ending session automatically.');
+          onEndSession();
+        }
       }
+      setElapsedSeconds(secs);
     };
     updateTimer();
     const interval = setInterval(updateTimer, 1000);
     return () => clearInterval(interval);
-  }, [activeSession]);
+  }, [activeSession, onEndSession]);
 
   if (!activeSession) {
     return (
@@ -303,41 +358,60 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
     );
   };
 
+  // Prevent non-integer keys in score inputs (decimals, minus, plus, exponents)
+  const handleScoreKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (['.', ',', '-', '+', 'e', 'E'].includes(e.key)) {
+      e.preventDefault();
+    }
+  };
+
   // Auto-Score calculations for Finish Match Modal
   const handleScoreAChange = (val: string) => {
-    setScoreInputA(val);
-    const num = parseInt(val, 10);
-    if (!isNaN(num) && num >= 0) {
+    const cleanVal = sanitizeScoreInput(val, maxScoreLimit);
+    setScoreInputA(cleanVal);
+    if (cleanVal !== '') {
+      const num = parseInt(cleanVal, 10);
       const autoB = calculateWinningScore(num, targetScore);
       setScoreInputB(autoB.toString());
+    } else {
+      setScoreInputB('');
     }
   };
 
   const handleScoreBChange = (val: string) => {
-    setScoreInputB(val);
-    const num = parseInt(val, 10);
-    if (!isNaN(num) && num >= 0) {
+    const cleanVal = sanitizeScoreInput(val, maxScoreLimit);
+    setScoreInputB(cleanVal);
+    if (cleanVal !== '') {
+      const num = parseInt(cleanVal, 10);
       const autoA = calculateWinningScore(num, targetScore);
       setScoreInputA(autoA.toString());
+    } else {
+      setScoreInputA('');
     }
   };
 
   // Auto-Score calculations for Delete / End Game Modal
   const handleDeleteScoreAChange = (val: string) => {
-    setDeleteScoreA(val);
-    const num = parseInt(val, 10);
-    if (!isNaN(num) && num >= 0) {
+    const cleanVal = sanitizeScoreInput(val, maxScoreLimit);
+    setDeleteScoreA(cleanVal);
+    if (cleanVal !== '') {
+      const num = parseInt(cleanVal, 10);
       const autoB = calculateWinningScore(num, targetScore);
       setDeleteScoreB(autoB.toString());
+    } else {
+      setDeleteScoreB('');
     }
   };
 
   const handleDeleteScoreBChange = (val: string) => {
-    setDeleteScoreB(val);
-    const num = parseInt(val, 10);
-    if (!isNaN(num) && num >= 0) {
+    const cleanVal = sanitizeScoreInput(val, maxScoreLimit);
+    setDeleteScoreB(cleanVal);
+    if (cleanVal !== '') {
+      const num = parseInt(cleanVal, 10);
       const autoA = calculateWinningScore(num, targetScore);
       setDeleteScoreA(autoA.toString());
+    } else {
+      setDeleteScoreA('');
     }
   };
 
@@ -546,6 +620,40 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
     const ids = selectedEligibleCourtIds.length === 0 ? null : selectedEligibleCourtIds;
     await onUpdatePlayerCourtEligibility(editingEligibilityPlayerId, ids);
     setEditingEligibilityPlayerId(null);
+  };
+
+  const handleOpenReplacePlayerModal = (
+    match: MatchEntity,
+    courtName: string,
+    slotKey: 'teamAPlayer1Id' | 'teamAPlayer2Id' | 'teamBPlayer1Id' | 'teamBPlayer2Id',
+    currentPlayerId: number
+  ) => {
+    setEditingCourtPlayer({ match, courtName, slotKey, currentPlayerId });
+  };
+
+  const handleExecutePlayerReplace = async (selectedPlayerId: number) => {
+    if (!editingCourtPlayer || !onReplaceMatchPlayer) return;
+    const { match, slotKey, currentPlayerId } = editingCourtPlayer;
+
+    let teamAPlayer1Id = match.teamAPlayer1Id;
+    let teamAPlayer2Id = match.teamAPlayer2Id;
+    let teamBPlayer1Id = match.teamBPlayer1Id;
+    let teamBPlayer2Id = match.teamBPlayer2Id;
+
+    // Check intra-court swap: if selected player is already on this court, swap their position with current player
+    if (teamAPlayer1Id === selectedPlayerId) teamAPlayer1Id = currentPlayerId;
+    else if (teamAPlayer2Id === selectedPlayerId) teamAPlayer2Id = currentPlayerId;
+    else if (teamBPlayer1Id === selectedPlayerId) teamBPlayer1Id = currentPlayerId;
+    else if (teamBPlayer2Id === selectedPlayerId) teamBPlayer2Id = currentPlayerId;
+
+    // Replace target slot with selected player
+    if (slotKey === 'teamAPlayer1Id') teamAPlayer1Id = selectedPlayerId;
+    else if (slotKey === 'teamAPlayer2Id') teamAPlayer2Id = selectedPlayerId;
+    else if (slotKey === 'teamBPlayer1Id') teamBPlayer1Id = selectedPlayerId;
+    else if (slotKey === 'teamBPlayer2Id') teamBPlayer2Id = selectedPlayerId;
+
+    setEditingCourtPlayer(null);
+    await onReplaceMatchPlayer(match.id, teamAPlayer1Id, teamAPlayer2Id, teamBPlayer1Id, teamBPlayer2Id);
   };
 
   return (
@@ -957,29 +1065,71 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
                     {/* Active Match Display */}
                     {activeMatch ? (
                       <div className="space-y-4">
-                        <div className="grid grid-cols-2 gap-2 bg-slate-950/80 p-3 rounded-xl border border-slate-800/80">
+                        <div className="grid grid-cols-2 gap-2 bg-slate-950/80 p-2.5 rounded-xl border border-slate-800/80">
                           {/* Team A */}
-                          <div className="space-y-1">
+                          <div className="space-y-1.5">
                             <span className="text-[10px] font-black uppercase tracking-wider text-sky-400">
                               Team A
                             </span>
-                            <div className="text-xs font-bold text-slate-100 flex flex-col gap-0.5">
-                              <span>{renderPlayerWithCount(activeMatch.teamAPlayer1Id)}</span>
+                            <div className="flex flex-col gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleOpenReplacePlayerModal(activeMatch, court.name, 'teamAPlayer1Id', activeMatch.teamAPlayer1Id)}
+                                className="w-full text-left bg-slate-900/80 hover:bg-sky-500/10 border border-slate-800 hover:border-sky-500/40 rounded-lg p-1.5 transition-all cursor-pointer group flex items-center justify-between gap-1"
+                                title="Click to replace or swap player"
+                              >
+                                <span className="text-xs font-bold text-slate-100 truncate">
+                                  {renderPlayerWithCount(activeMatch.teamAPlayer1Id)}
+                                </span>
+                                <Edit2 className="w-3 h-3 text-slate-500 group-hover:text-sky-400 shrink-0 opacity-70 group-hover:opacity-100" />
+                              </button>
+
                               {activeMatch.teamAPlayer2Id && (
-                                <span>{renderPlayerWithCount(activeMatch.teamAPlayer2Id)}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenReplacePlayerModal(activeMatch, court.name, 'teamAPlayer2Id', activeMatch.teamAPlayer2Id!)}
+                                  className="w-full text-left bg-slate-900/80 hover:bg-sky-500/10 border border-slate-800 hover:border-sky-500/40 rounded-lg p-1.5 transition-all cursor-pointer group flex items-center justify-between gap-1"
+                                  title="Click to replace or swap player"
+                                >
+                                  <span className="text-xs font-bold text-slate-100 truncate">
+                                    {renderPlayerWithCount(activeMatch.teamAPlayer2Id)}
+                                  </span>
+                                  <Edit2 className="w-3 h-3 text-slate-500 group-hover:text-sky-400 shrink-0 opacity-70 group-hover:opacity-100" />
+                                </button>
                               )}
                             </div>
                           </div>
 
                           {/* Team B */}
-                          <div className="space-y-1 text-right">
+                          <div className="space-y-1.5">
                             <span className="text-[10px] font-black uppercase tracking-wider text-pink-400">
                               Team B
                             </span>
-                            <div className="text-xs font-bold text-slate-100 flex flex-col gap-0.5">
-                              <span>{renderPlayerWithCount(activeMatch.teamBPlayer1Id)}</span>
+                            <div className="flex flex-col gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleOpenReplacePlayerModal(activeMatch, court.name, 'teamBPlayer1Id', activeMatch.teamBPlayer1Id)}
+                                className="w-full text-left bg-slate-900/80 hover:bg-pink-500/10 border border-slate-800 hover:border-pink-500/40 rounded-lg p-1.5 transition-all cursor-pointer group flex items-center justify-between gap-1"
+                                title="Click to replace or swap player"
+                              >
+                                <span className="text-xs font-bold text-slate-100 truncate">
+                                  {renderPlayerWithCount(activeMatch.teamBPlayer1Id)}
+                                </span>
+                                <Edit2 className="w-3 h-3 text-slate-500 group-hover:text-pink-400 shrink-0 opacity-70 group-hover:opacity-100" />
+                              </button>
+
                               {activeMatch.teamBPlayer2Id && (
-                                <span>{renderPlayerWithCount(activeMatch.teamBPlayer2Id)}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenReplacePlayerModal(activeMatch, court.name, 'teamBPlayer2Id', activeMatch.teamBPlayer2Id!)}
+                                  className="w-full text-left bg-slate-900/80 hover:bg-pink-500/10 border border-slate-800 hover:border-pink-500/40 rounded-lg p-1.5 transition-all cursor-pointer group flex items-center justify-between gap-1"
+                                  title="Click to replace or swap player"
+                                >
+                                  <span className="text-xs font-bold text-slate-100 truncate">
+                                    {renderPlayerWithCount(activeMatch.teamBPlayer2Id)}
+                                  </span>
+                                  <Edit2 className="w-3 h-3 text-slate-500 group-hover:text-pink-400 shrink-0 opacity-70 group-hover:opacity-100" />
+                                </button>
                               )}
                             </div>
                           </div>
@@ -1275,7 +1425,7 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
 
           {/* Standings vs Matches Toggle */}
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <button
                   type="button"
@@ -1299,26 +1449,61 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
                 >
                   Match Records ({completedMatches.length})
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setStatsView('AUDIT_LOGS')}
+                  className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                    statsView === 'AUDIT_LOGS'
+                      ? 'bg-amber-500 text-slate-950 font-black'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <History className="w-3.5 h-3.5" />
+                  <span>Audit Logs ({auditLogs.length})</span>
+                </button>
               </div>
 
-              {statsView === 'STANDINGS' && (
-                <div className="flex items-center gap-1.5">
-                  {(['ALL', 'A', 'B', 'C'] as const).map((tier) => (
+              <div className="flex items-center gap-3 flex-wrap">
+                {statsView === 'STANDINGS' && (
+                  <div className="flex items-center gap-1.5">
+                    {(['ALL', 'A', 'B', 'C'] as const).map((tier) => (
+                      <button
+                        key={tier}
+                        type="button"
+                        onClick={() => setTierFilter(tier)}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                          tierFilter === tier
+                            ? 'bg-slate-800 text-sky-400 border border-sky-500/40'
+                            : 'text-slate-400 hover:text-slate-300'
+                        }`}
+                      >
+                        {tier === 'ALL' ? 'All Groups' : `Group ${tier}`}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Player Search Input */}
+                <div className="relative flex-1 max-w-xs">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={statsSearchQuery}
+                    onChange={(e) => setStatsSearchQuery(e.target.value)}
+                    placeholder="Search by player name..."
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-sky-500 font-medium"
+                  />
+                  {statsSearchQuery && (
                     <button
-                      key={tier}
                       type="button"
-                      onClick={() => setTierFilter(tier)}
-                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
-                        tierFilter === tier
-                          ? 'bg-slate-800 text-sky-400 border border-sky-500/40'
-                          : 'text-slate-400 hover:text-slate-300'
-                      }`}
+                      onClick={() => setStatsSearchQuery('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 text-xs cursor-pointer"
                     >
-                      {tier === 'ALL' ? 'All Groups' : `Group ${tier}`}
+                      ✕
                     </button>
-                  ))}
+                  )}
                 </div>
-              )}
+              </div>
             </div>
 
             {/* Standings Table */}
@@ -1351,6 +1536,7 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
                         return { ...s, rank: i + 1, tierGroup };
                       })
                       .filter((s) => tierFilter === 'ALL' || s.tierGroup === tierFilter)
+                      .filter((s) => !statsSearchQuery.trim() || s.name.toLowerCase().includes(statsSearchQuery.trim().toLowerCase()))
                       .map((stat) => {
                         const player = players.find((p) => p.id === stat.playerId);
                         return (
@@ -1410,7 +1596,22 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
                 {completedMatches.length === 0 ? (
                   <p className="text-xs text-slate-500 text-center py-6">No completed matches in this session yet.</p>
                 ) : (
-                  completedMatches.map((m) => {
+                  completedMatches
+                    .filter((m) => {
+                      if (!statsSearchQuery.trim()) return true;
+                      const q = statsSearchQuery.trim().toLowerCase();
+                      const p1A = players.find((p) => p.id === m.teamAPlayer1Id)?.name || '';
+                      const p2A = m.teamAPlayer2Id ? players.find((p) => p.id === m.teamAPlayer2Id)?.name || '' : '';
+                      const p1B = players.find((p) => p.id === m.teamBPlayer1Id)?.name || '';
+                      const p2B = m.teamBPlayer2Id ? players.find((p) => p.id === m.teamBPlayer2Id)?.name || '' : '';
+                      return (
+                        p1A.toLowerCase().includes(q) ||
+                        p2A.toLowerCase().includes(q) ||
+                        p1B.toLowerCase().includes(q) ||
+                        p2B.toLowerCase().includes(q)
+                      );
+                    })
+                    .map((m) => {
                     const court = courts.find((c) => c.id === m.courtId);
                     const teamAWon = m.winnerTeam === 'A' || ((m.teamAScore ?? 0) > (m.teamBScore ?? 0));
                     const teamBWon = m.winnerTeam === 'B' || ((m.teamBScore ?? 0) > (m.teamAScore ?? 0));
@@ -1457,9 +1658,120 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
                             {teamBWon && <CheckCircle className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
                           </div>
                         </div>
+
+                        {/* Edit Action & Edited Badge */}
+                        <div className="flex items-center gap-2">
+                          {m.isEdited && (
+                            <span className="px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[10px] font-bold">
+                              Edited
+                            </span>
+                          )}
+                          {activeSession.status !== 'End' && onEditMatchScore && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingScoreMatch(m);
+                                setEditScoreA(m.teamAScore != null ? m.teamAScore.toString() : '');
+                                setEditScoreB(m.teamBScore != null ? m.teamBScore.toString() : '');
+                                setEditScoreError(null);
+                              }}
+                              className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-slate-800 hover:bg-sky-500/20 hover:text-sky-300 text-slate-300 border border-slate-700 transition-all cursor-pointer"
+                              title="Edit Match Score (Before session ends)"
+                            >
+                              <Edit2 className="w-3.5 h-3.5 text-sky-400" />
+                              <span>Edit Score</span>
+                            </button>
+                          )}
+                        </div>
                       </div>
                     );
                   })
+                )}
+              </div>
+            )}
+
+            {/* Audit Logs View */}
+            {statsView === 'AUDIT_LOGS' && (
+              <div className="space-y-3">
+                {auditLogs.length === 0 ? (
+                  <div className="bg-slate-950 border border-slate-800 rounded-xl p-8 text-center space-y-2">
+                    <History className="w-8 h-8 text-slate-600 mx-auto" />
+                    <p className="text-xs text-slate-400 font-bold">No Score Audit Logs Recorded Yet</p>
+                    <p className="text-[11px] text-slate-500">
+                      When managers correct completed match scores during an active session, full audit details are recorded here.
+                    </p>
+                  </div>
+                ) : (
+                  auditLogs.map((log) => (
+                    <div
+                      key={log.id}
+                      className="bg-slate-950 border border-slate-800 rounded-2xl p-4 space-y-3 text-xs"
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-900 pb-2">
+                        <div className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 font-mono text-[10px] font-bold border border-amber-500/20">
+                            Match #{log.matchNumber}
+                          </span>
+                          <span className="font-bold text-slate-200">{log.courtName}</span>
+                          {log.weeklySessionName && (
+                            <span className="px-2 py-0.5 rounded bg-sky-500/10 text-sky-400 text-[10px] font-bold border border-sky-500/20">
+                              {log.weeklySessionName}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          {new Date(log.timestamp).toLocaleString('en-GB', {
+                            day: '2-digit',
+                            month: 'short',
+                            year: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit'
+                          })}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 bg-slate-900/50 p-3 rounded-xl border border-slate-800/80">
+                        {/* Who updated */}
+                        <div className="space-y-1">
+                          <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Updated By</span>
+                          <div className="font-bold text-slate-200">{log.updatedByName}</div>
+                          <div className="text-[10px] text-slate-400 font-mono">{log.updatedByEmail}</div>
+                          <div className="flex items-center gap-2 pt-0.5">
+                            <span className="px-2 py-0.5 rounded bg-purple-500/10 text-purple-400 text-[10px] font-bold border border-purple-500/20">
+                              {log.updatedByRole}
+                            </span>
+                            {log.updatedByUid && (
+                              <span className="text-[9px] text-slate-500 font-mono truncate">UID: {log.updatedByUid}</span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Changes */}
+                        <div className="space-y-1">
+                          <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Score Changes</span>
+                          <div className="text-slate-300 font-medium">
+                            {log.teamAPlayers} vs {log.teamBPlayers}
+                          </div>
+                          <div className="flex items-center gap-2 font-mono font-bold text-xs pt-1">
+                            <span className="text-rose-400 line-through">
+                              {log.oldTeamAScore} - {log.oldTeamBScore}
+                            </span>
+                            <span className="text-slate-500">➜</span>
+                            <span className="text-emerald-400">
+                              {log.newTeamAScore} - {log.newTeamBScore}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Session context */}
+                      <div className="text-[10px] text-slate-400 flex items-center gap-3">
+                        <span>Session: <strong className="text-slate-300">{log.sessionName}</strong></span>
+                        <span>Date: <strong className="text-slate-300">{log.sessionDate}</strong></span>
+                      </div>
+                    </div>
+                  ))
                 )}
               </div>
             )}
@@ -1497,10 +1809,11 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-sky-400 uppercase">Team A</span>
                   <input
-                    type="number"
-                    min={0}
-                    max={maxScoreLimit}
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
                     value={scoreInputA}
+                    onKeyDown={handleScoreKeyDown}
                     onChange={(e) => handleScoreAChange(e.target.value)}
                     placeholder="Score"
                     className="w-20 bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-center font-mono font-black text-sm text-slate-100 focus:outline-none focus:border-sky-500"
@@ -1519,10 +1832,11 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-pink-400 uppercase">Team B</span>
                   <input
-                    type="number"
-                    min={0}
-                    max={maxScoreLimit}
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
                     value={scoreInputB}
+                    onKeyDown={handleScoreKeyDown}
                     onChange={(e) => handleScoreBChange(e.target.value)}
                     placeholder="Score"
                     className="w-20 bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-center font-mono font-black text-sm text-slate-100 focus:outline-none focus:border-sky-500"
@@ -1585,10 +1899,11 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-sky-400 font-bold">Team A Score</span>
                   <input
-                    type="number"
-                    min={0}
-                    max={maxScoreLimit}
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
                     value={deleteScoreA}
+                    onKeyDown={handleScoreKeyDown}
                     onChange={(e) => handleDeleteScoreAChange(e.target.value)}
                     className="w-16 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-center font-mono text-xs text-white"
                   />
@@ -1596,10 +1911,11 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-pink-400 font-bold">Team B Score</span>
                   <input
-                    type="number"
-                    min={0}
-                    max={maxScoreLimit}
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
                     value={deleteScoreB}
+                    onKeyDown={handleScoreKeyDown}
                     onChange={(e) => handleDeleteScoreBChange(e.target.value)}
                     className="w-16 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-center font-mono text-xs text-white"
                   />
@@ -2172,6 +2488,261 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* CHANGE PLAYER ON COURT MODAL */}
+      {editingCourtPlayer && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl animate-scale-in">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2">
+                  <ArrowLeftRight className="w-4 h-4 text-sky-400" />
+                  <span>Change Player ({editingCourtPlayer.courtName})</span>
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Select a candidate player to replace or swap with{' '}
+                  <strong className="text-sky-300">
+                    {players.find((p) => p.id === editingCourtPlayer.currentPlayerId)?.name || 'Player'}
+                  </strong>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingCourtPlayer(null)}
+                className="p-1 text-slate-400 hover:text-slate-200 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {(() => {
+              const targetMatch = editingCourtPlayer.match;
+              const currentCourtPlayerIds = new Set<number>([
+                targetMatch.teamAPlayer1Id,
+                ...(targetMatch.teamAPlayer2Id ? [targetMatch.teamAPlayer2Id] : []),
+                targetMatch.teamBPlayer1Id,
+                ...(targetMatch.teamBPlayer2Id ? [targetMatch.teamBPlayer2Id] : [])
+              ]);
+
+              const candidatePlayers = sessionPlayers.filter((sp) => {
+                if (sp.playerId === editingCourtPlayer.currentPlayerId) return false;
+                if (sp.isPaused) return false;
+                if (sp.isPlaying && !currentCourtPlayerIds.has(sp.playerId)) return false;
+                return true;
+              });
+
+              if (candidatePlayers.length === 0) {
+                return (
+                  <div className="py-6 text-center space-y-2">
+                    <p className="text-xs text-slate-400">No eligible candidate players available to swap or replace.</p>
+                    <p className="text-[11px] text-slate-500">All other session players are either paused or playing on other courts.</p>
+                  </div>
+                );
+              }
+
+              return (
+                <div className="max-h-80 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                  {candidatePlayers.map((sp) => {
+                    const isOnSameCourt = currentCourtPlayerIds.has(sp.playerId);
+                    const count = getPlayerGamesCount(sp.playerId);
+
+                    return (
+                      <button
+                        key={sp.playerId}
+                        type="button"
+                        onClick={() => handleExecutePlayerReplace(sp.playerId)}
+                        className="w-full bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-sky-500/50 rounded-xl p-3 flex items-center justify-between text-left transition-all cursor-pointer group"
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <span className={`text-xs font-bold ${sp.player.gender === 'FEMALE' ? 'text-pink-400' : 'text-sky-400'}`}>
+                            {sp.player.gender === 'FEMALE' ? '♀' : '♂'}
+                          </span>
+                          <div>
+                            <div className="text-xs font-bold text-slate-100 group-hover:text-sky-300 transition-colors">
+                              {sp.player.name}{' '}
+                              <span className="text-[10px] font-mono text-slate-400 font-normal">({count} games)</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div>
+                          {isOnSameCourt ? (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                              Swap (On Court)
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                              Waiting Player
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+
+            <div className="flex items-center justify-end pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setEditingCourtPlayer(null)}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-slate-200 cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* POPUP 3: EDIT MATCH SCORE MODAL */}
+      {editingScoreMatch && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-5">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="text-sm font-black text-slate-100 uppercase tracking-wider">
+                  Edit Match #{editingScoreMatch.matchNumber} Score
+                </h3>
+                <p className="text-[11px] text-slate-400">
+                  {courts.find((c) => c.id === editingScoreMatch.courtId)?.name || 'Court'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingScoreMatch(null)}
+                className="p-1 text-slate-400 hover:text-slate-200 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 leading-relaxed">
+              <strong>Target Score: {targetScore} points</strong> (Max {maxScoreLimit}). Correcting score errors updates standings automatically and logs an audit record.
+            </div>
+
+            {editScoreError && (
+              <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-xs font-bold text-rose-400">
+                {editScoreError}
+              </div>
+            )}
+
+            <div className="space-y-4">
+              {/* Team A Input */}
+              <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-sky-400 uppercase">Team A</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={editScoreA}
+                    onChange={(e) => {
+                      const cleanVal = sanitizeScoreInput(e.target.value, maxScoreLimit);
+                      setEditScoreA(cleanVal);
+                      setEditScoreError(null);
+                    }}
+                    placeholder="Score"
+                    className="w-20 bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-center font-mono font-black text-sm text-slate-100 focus:outline-none focus:border-sky-500"
+                  />
+                </div>
+                <div className="text-xs text-slate-300 font-bold">
+                  {renderPlayerWithCount(editingScoreMatch.teamAPlayer1Id)}
+                  {editingScoreMatch.teamAPlayer2Id && (
+                    <span> & {renderPlayerWithCount(editingScoreMatch.teamAPlayer2Id)}</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Team B Input */}
+              <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-pink-400 uppercase">Team B</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={editScoreB}
+                    onChange={(e) => {
+                      const cleanVal = sanitizeScoreInput(e.target.value, maxScoreLimit);
+                      setEditScoreB(cleanVal);
+                      setEditScoreError(null);
+                    }}
+                    placeholder="Score"
+                    className="w-20 bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-center font-mono font-black text-sm text-slate-100 focus:outline-none focus:border-sky-500"
+                  />
+                </div>
+                <div className="text-xs text-slate-300 font-bold">
+                  {renderPlayerWithCount(editingScoreMatch.teamBPlayer1Id)}
+                  {editingScoreMatch.teamBPlayer2Id && (
+                    <span> & {renderPlayerWithCount(editingScoreMatch.teamBPlayer2Id)}</span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Old vs New Summary Preview */}
+            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-[11px] space-y-1">
+              <div className="flex items-center justify-between text-slate-400">
+                <span>Original Score:</span>
+                <span className="font-mono font-bold text-slate-200">
+                  {editingScoreMatch.teamAScore ?? 0} - {editingScoreMatch.teamBScore ?? 0} ({editingScoreMatch.winnerTeam === 'A' ? 'Team A Won' : 'Team B Won'})
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-sky-400">
+                <span>Updated Score:</span>
+                <span className="font-mono font-bold">
+                  {editScoreA || '0'} - {editScoreB || '0'} ({(parseInt(editScoreA || '0', 10) || 0) > (parseInt(editScoreB || '0', 10) || 0) ? 'Team A Won' : 'Team B Won'})
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setEditingScoreMatch(null)}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-slate-200 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!editingScoreMatch || !onEditMatchScore) return;
+                  const trimmedA = editScoreA.trim();
+                  const trimmedB = editScoreB.trim();
+                  if (trimmedA === '' || trimmedB === '') {
+                    setEditScoreError('Please enter scores for both Team A and Team B.');
+                    return;
+                  }
+                  const valA = parseInt(trimmedA, 10);
+                  const valB = parseInt(trimmedB, 10);
+                  if (isNaN(valA) || isNaN(valB) || valA < 0 || valB < 0) {
+                    setEditScoreError('Scores must be non-negative whole numbers.');
+                    return;
+                  }
+                  if (valA > maxScoreLimit || valB > maxScoreLimit) {
+                    setEditScoreError(`Score cannot exceed maximum limit of ${maxScoreLimit} points.`);
+                    return;
+                  }
+                  if (valA === valB) {
+                    setEditScoreError('Scores cannot be tied. One team must win.');
+                    return;
+                  }
+                  const winner: 'A' | 'B' = valA > valB ? 'A' : 'B';
+                  await onEditMatchScore(editingScoreMatch.id, valA, valB, winner);
+                  setEditingScoreMatch(null);
+                }}
+                className="px-5 py-2.5 rounded-xl text-xs font-bold bg-sky-600 hover:bg-sky-500 text-white shadow-md cursor-pointer flex items-center gap-1.5"
+              >
+                <Check className="w-4 h-4" />
+                <span>Save Score & Audit Log</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

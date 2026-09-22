@@ -37,6 +37,9 @@ export interface SessionEntity {
   manager2Id?: number | null;
   manager2Name?: string | null;
   targetScore?: number;
+  isDeleted?: boolean;
+  deletedAt?: number;
+  deletedBy?: string;
 }
 
 export interface SessionPlayerJoinEntity {
@@ -77,6 +80,9 @@ export interface MatchEntity {
   winnerTeam: 'A' | 'B' | null;
   startTime: number;
   endTime: number | null;
+  isEdited?: boolean;
+  lastEditedAt?: number;
+  lastEditedBy?: string;
 }
 
 export interface WeeklySessionEntity {
@@ -105,10 +111,13 @@ export interface WeeklySessionCourtEntity {
   gameType: GameType;
 }
 
+export type ManagerRole = 'CLUB_MANAGER' | 'SECONDARY_CLUB_MANAGER' | 'SESSION_MANAGER';
+
 export interface SessionManagerEntity {
   id: number;
   name: string;
   email: string;
+  role?: ManagerRole;
   authUid?: string;
   uid?: string;
   inviteStatus?: 'INVITED' | 'ACTIVE' | 'EMAIL_SENT';
@@ -206,4 +215,30 @@ export interface MemberSessionPerformance {
     teamScore: number;
     opponentScore: number;
   }[];
+}
+
+export interface ScoreAuditLogEntity {
+  id: string;
+  matchId: number;
+  matchNumber: number;
+  sessionId: number;
+  sessionName: string;
+  weeklySessionId?: number | null;
+  weeklySessionName?: string | null;
+  sessionDate: string;
+  courtName: string;
+  teamAPlayers: string;
+  teamBPlayers: string;
+  oldTeamAScore: number;
+  oldTeamBScore: number;
+  oldWinnerTeam: 'A' | 'B';
+  newTeamAScore: number;
+  newTeamBScore: number;
+  newWinnerTeam: 'A' | 'B';
+  scoreChangeSummary: string;
+  updatedByUid: string;
+  updatedByName: string;
+  updatedByEmail: string;
+  updatedByRole: ManagerRole | string;
+  timestamp: number;
 }

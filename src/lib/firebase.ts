@@ -41,7 +41,9 @@ import type {
   WeeklySessionMemberEntity, 
   WeeklySessionCourtEntity, 
   CourtMasterEntity,
-  SessionManagerEntity
+  SessionManagerEntity,
+  ManagerRole,
+  ScoreAuditLogEntity
 } from '../types';
 import { 
   firebaseConfig, 
@@ -207,24 +209,27 @@ export async function findClubsForUser(email: string, fallbackUid?: string | nul
       }
     }
 
-    // Fallback 1: If no entries found and fallbackUid exists, check /clubs/club_{fallbackUid}
-    if (list.length === 0 && fallbackUid) {
+    // Fallback 1: Check /clubs/club_{fallbackUid} for owned club if fallbackUid exists
+    if (fallbackUid) {
       const ownerClubId = `club_${fallbackUid}`;
-      const clubSnap = await getRtdb(ref(rtdb, `clubs/${ownerClubId}/details`));
-      if (clubSnap.exists()) {
-        const details = clubSnap.val();
-        const assoc: UserClubAssociation = {
-          email: cleanEmail,
-          clubId: ownerClubId,
-          clubName: details.name || 'My Badminton Club',
-          role: 'CLUB_MANAGER',
-          ownerUid: fallbackUid,
-          venue: details.venue || '',
-          updatedAt: Date.now(),
-        };
-        list.push(assoc);
-        // Register in index
-        await registerUserClubAssociation(assoc);
+      const alreadyInList = list.some((item) => item.clubId === ownerClubId);
+      if (!alreadyInList) {
+        const clubSnap = await getRtdb(ref(rtdb, `clubs/${ownerClubId}/details`));
+        if (clubSnap.exists()) {
+          const details = clubSnap.val();
+          const assoc: UserClubAssociation = {
+            email: cleanEmail,
+            clubId: ownerClubId,
+            clubName: details.name || 'My Badminton Club',
+            role: 'CLUB_MANAGER',
+            ownerUid: fallbackUid,
+            venue: details.venue || '',
+            updatedAt: Date.now(),
+          };
+          list.push(assoc);
+          // Register in index
+          await registerUserClubAssociation(assoc);
+        }
       }
     }
 
@@ -587,6 +592,7 @@ export interface ParsedClubState {
   allCourtsMap: Record<number, CourtEntity[]>;
   allMatchesMap: Record<number, MatchEntity[]>;
   allJoinsMap: Record<number, SessionPlayerJoinEntity[]>;
+  allAuditLogsMap?: Record<number, ScoreAuditLogEntity[]>;
 }
 
 /**
@@ -645,6 +651,7 @@ export function parseRtdbClubData(raw: any, fallbackClubId: string = DEFAULT_CLU
         id: rawId,
         name: m.name || `Manager ${rawId}`,
         email: m.email || '',
+        role: (m.role as ManagerRole) || 'SESSION_MANAGER',
         authUid: managerAuthUid,
         uid: managerAuthUid,
         inviteStatus: m.inviteStatus || 'ACTIVE',
@@ -736,6 +743,7 @@ export function parseRtdbClubData(raw: any, fallbackClubId: string = DEFAULT_CLU
   const allCourtsMap: Record<number, CourtEntity[]> = {};
   const allMatchesMap: Record<number, MatchEntity[]> = {};
   const allJoinsMap: Record<number, SessionPlayerJoinEntity[]> = {};
+  const allAuditLogsMap: Record<number, ScoreAuditLogEntity[]> = {};
 
   if (raw.sessions) {
     for (const [sKey, sObj] of Object.entries<any>(raw.sessions)) {
@@ -760,6 +768,9 @@ export function parseRtdbClubData(raw: any, fallbackClubId: string = DEFAULT_CLU
         manager2Id: info.manager2Id ? Number(String(info.manager2Id).replace('player_', '')) : null,
         manager2Name: info.manager2Name || null,
         targetScore: info.targetScore ? Number(info.targetScore) : undefined,
+        isDeleted: Boolean(info.isDeleted),
+        deletedAt: info.deletedAt ? Number(info.deletedAt) : undefined,
+        deletedBy: info.deletedBy || undefined,
       });
 
       // Session Players
@@ -843,11 +854,52 @@ export function parseRtdbClubData(raw: any, fallbackClubId: string = DEFAULT_CLU
             winnerTeam: mVal.winnerTeam || null,
             startTime: Number(mVal.startTime) || Date.now(),
             endTime,
+            isEdited: Boolean(mVal.isEdited),
+            lastEditedAt: mVal.lastEditedAt ? Number(mVal.lastEditedAt) : undefined,
+            lastEditedBy: mVal.lastEditedBy || undefined,
           });
         }
         matchesList.sort((a, b) => a.matchNumber - b.matchNumber);
       }
       allMatchesMap[rawSId] = matchesList;
+
+      // Parse audit logs for this session
+      const auditLogsList: ScoreAuditLogEntity[] = [];
+      const rawAuditLogs = sObj.audit_logs || sObj.auditLogs;
+      if (rawAuditLogs && typeof rawAuditLogs === 'object') {
+        for (const alKey of Object.keys(rawAuditLogs)) {
+          const al = rawAuditLogs[alKey];
+          if (al && typeof al === 'object') {
+            auditLogsList.push({
+              id: al.id || alKey,
+              matchId: Number(al.matchId) || 0,
+              matchNumber: Number(al.matchNumber) || 0,
+              sessionId: Number(al.sessionId) || rawSId,
+              sessionName: al.sessionName || '',
+              weeklySessionId: al.weeklySessionId ? Number(al.weeklySessionId) : null,
+              weeklySessionName: al.weeklySessionName || null,
+              sessionDate: al.sessionDate || '',
+              courtName: al.courtName || '',
+              teamAPlayers: al.teamAPlayers || '',
+              teamBPlayers: al.teamBPlayers || '',
+              oldTeamAScore: Number(al.oldTeamAScore) || 0,
+              oldTeamBScore: Number(al.oldTeamBScore) || 0,
+              oldWinnerTeam: al.oldWinnerTeam || 'A',
+              newTeamAScore: Number(al.newTeamAScore) || 0,
+              newTeamBScore: Number(al.newTeamBScore) || 0,
+              newWinnerTeam: al.newWinnerTeam || 'A',
+              scoreChangeSummary: al.scoreChangeSummary || '',
+              updatedByUid: al.updatedByUid || '',
+              updatedByName: al.updatedByName || '',
+              updatedByEmail: al.updatedByEmail || '',
+              updatedByRole: al.updatedByRole || '',
+              timestamp: Number(al.timestamp) || Date.now(),
+            });
+          }
+        }
+        auditLogsList.sort((a, b) => b.timestamp - a.timestamp);
+      }
+      allAuditLogsMap[rawSId] = auditLogsList;
     }
     sessions.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   }
@@ -864,6 +916,7 @@ export function parseRtdbClubData(raw: any, fallbackClubId: string = DEFAULT_CLU
     allCourtsMap,
     allMatchesMap,
     allJoinsMap,
+    allAuditLogsMap,
   };
 }
 
@@ -895,9 +948,30 @@ export async function syncMatchToRealtime(
       winnerTeam: match.winnerTeam,
       startTime: match.startTime,
       endTime: match.endTime,
+      isEdited: Boolean(match.isEdited),
+      lastEditedAt: match.lastEditedAt || null,
+      lastEditedBy: match.lastEditedBy || null,
     });
   } catch (err) {
     console.warn('Error syncing match to Realtime DB:', err);
+  }
+}
+
+/**
+ * Helper to sync score audit log entries to Realtime DB
+ */
+export async function syncScoreAuditLogToRealtime(
+  clubId: string,
+  sessionId: number,
+  log: ScoreAuditLogEntity
+): Promise<void> {
+  try {
+    const sessionLogRef = ref(rtdb, `clubs/${clubId}/sessions/session_${sessionId}/audit_logs/${log.id}`);
+    await setRtdb(sessionLogRef, log);
+    const clubLogRef = ref(rtdb, `clubs/${clubId}/audit_logs/score_edits/${log.id}`);
+    await setRtdb(clubLogRef, log);
+  } catch (err) {
+    console.warn('Error syncing score audit log to Realtime DB:', err);
   }
 }
 
