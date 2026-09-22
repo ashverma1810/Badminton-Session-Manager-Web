@@ -789,6 +789,7 @@ export function parseRtdbClubData(raw: any, fallbackClubId: string = DEFAULT_CLU
             isPAYG: spVal.isPAYG === true || spVal.isPAYG === 'true' || spVal.isPAYG === 1,
             adjustedGames: Number(spVal.adjustedGames) || 0,
             pausedAtMatchCount: spVal.pausedAtMatchCount != null ? Number(spVal.pausedAtMatchCount) : null,
+            pairedPartnerId: spVal.pairedPartnerId != null ? Number(spVal.pairedPartnerId) : null,
           });
         }
       }
@@ -992,6 +993,7 @@ export async function syncSessionPlayerToRealtime(
       isPAYG: join.isPAYG,
       adjustedGames: join.adjustedGames,
       pausedAtMatchCount: join.pausedAtMatchCount,
+      pairedPartnerId: join.pairedPartnerId ?? null,
     });
   } catch (err) {
     console.warn('Error syncing session player to Realtime DB:', err);
@@ -1031,6 +1033,7 @@ export async function syncSessionStateToRealtime(
         isPAYG: j.isPAYG,
         adjustedGames: j.adjustedGames,
         pausedAtMatchCount: j.pausedAtMatchCount,
+        pairedPartnerId: j.pairedPartnerId ?? null,
       };
     });
 

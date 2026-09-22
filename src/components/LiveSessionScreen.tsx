@@ -26,7 +26,9 @@ import {
   Edit2,
   ArrowLeftRight,
   Search,
-  History
+  History,
+  Link2,
+  Unlink
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import type { 
@@ -48,17 +50,10 @@ export function calculateWinningScore(losingScore: number, targetScore: number =
   const maxCap = targetScore === 15 ? 20 : (targetScore === 21 ? 30 : targetScore + 9);
   if (losingScore < 0) return targetScore;
   
-  // If user entered maxCap (e.g. 20 for 15-pt game, 30 for 21-pt game),
-  // which is always the winning score on a maxed-out game, system calculates losing score of maxCap - 1 (19 or 29).
   if (losingScore >= maxCap) {
     return maxCap - 1;
   }
 
-  // BWF Official Badminton Scoring / Deuce Rules:
-  // If losingScore < targetScore - 1 (e.g. 0..13 for 15-pt game, or 0..19 for 21-pt game):
-  // Winning score is targetScore (e.g. 15 or 21).
-  // If losingScore >= targetScore - 1 (e.g. 14..19 for 15-pt game, or 20..29 for 21-pt game):
-  // It is deuce! The winner must lead by 2 points (losingScore + 2), capped at maxCap.
   if (losingScore < targetScore - 1) {
     return targetScore;
   } else {
@@ -68,7 +63,6 @@ export function calculateWinningScore(losingScore: number, targetScore: number =
 
 export function sanitizeScoreInput(rawVal: string, maxCap: number): string {
   if (!rawVal) return '';
-  // Strip non-digits and any decimal components
   const mainPart = rawVal.split('.')[0].replace(/[^0-9]/g, '');
   if (mainPart === '') return '';
   const num = parseInt(mainPart, 10);
@@ -111,6 +105,8 @@ interface LiveSessionScreenProps {
   onTogglePlayerPAYG?: (playerId: number, currentPAYG: boolean) => Promise<void>;
   onNavigateToSessions?: () => void;
   onEditMatchScore?: (matchId: number, teamAScore: number, teamBScore: number, winner: 'A' | 'B') => Promise<void>;
+  onPairPlayers?: (player1Id: number, player2Id: number) => Promise<void>;
+  onUnpairPlayers?: (playerId: number) => Promise<void>;
   auditLogs?: ScoreAuditLogEntity[];
 }
 
@@ -141,15 +137,18 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
   onTogglePlayerPAYG,
   onNavigateToSessions,
   onEditMatchScore,
+  onPairPlayers,
+  onUnpairPlayers,
   auditLogs = [],
 }) => {
+
   // Main 3-Tab Structure requested: Session | Games | Stats
   const [activeTab, setActiveTab] = useState<'SESSION' | 'GAMES' | 'STATS'>(
     activeSession?.status === 'Active' ? 'GAMES' : 'SESSION'
   );
 
   // Rotation Sub-Tabs inside Games
-  const [rotationTab, setRotationTab] = useState<'WAITING' | 'PLAYING' | 'PAUSED'>('WAITING');
+  const [rotationTab, setRotationTab] = useState<'WAITING' | 'PLAYING' | 'PAUSED' | 'PAIRS'>('WAITING');
   
   // Stats Tab Sub-Toggle: Standings vs Match Records vs Audit Logs
   const [statsView, setStatsView] = useState<'STANDINGS' | 'MATCHES' | 'AUDIT_LOGS'>('STANDINGS');
@@ -214,6 +213,12 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
   // Court Eligibility Dialog
   const [editingEligibilityPlayerId, setEditingEligibilityPlayerId] = useState<number | null>(null);
   const [selectedEligibleCourtIds, setSelectedEligibleCourtIds] = useState<number[]>([]);
+
+  // Pair Players Modal State
+  const [showPairModal, setShowPairModal] = useState<boolean>(false);
+  const [pairP1, setPairP1] = useState<number | null>(null);
+  const [pairP2, setPairP2] = useState<number | null>(null);
+  const [pairError, setPairError] = useState<string | null>(null);
 
   const targetScore = clubDetails?.targetScore || 21;
   const maxScoreLimit = targetScore === 15 ? 20 : (targetScore === 21 ? 30 : targetScore + 9);
@@ -293,6 +298,31 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
   const playingPlayers = sessionPlayers.filter((p) => p.isPlaying);
   const pausedPlayers = sessionPlayers.filter((p) => p.isPaused && !p.isPlaying);
   const waitingPlayers = sessionPlayers.filter((p) => !p.isPaused && !p.isPlaying);
+
+  // Extract unique paired couples in current session
+  const pairedCouples: {
+    p1: PlayerEntity;
+    p2: PlayerEntity;
+    p1Join: SessionPlayerJoinEntity & { isPlaying: boolean };
+    p2Join: SessionPlayerJoinEntity & { isPlaying: boolean };
+  }[] = [];
+  const processedPairIds = new Set<number>();
+
+  sessionPlayers.forEach((sp) => {
+    if (sp.pairedPartnerId && !processedPairIds.has(sp.playerId)) {
+      const partnerSp = sessionPlayers.find((other) => other.playerId === sp.pairedPartnerId);
+      if (partnerSp) {
+        processedPairIds.add(sp.playerId);
+        processedPairIds.add(partnerSp.playerId);
+        pairedCouples.push({
+          p1: sp.player,
+          p2: partnerSp.player,
+          p1Join: sp,
+          p2Join: partnerSp
+        });
+      }
+    }
+  });
 
   // Completed matches (excluding unplayed 0-0 matches)
   const completedMatches = matches
@@ -859,6 +889,14 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
+                  onClick={() => setShowPairModal(true)}
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs transition-all cursor-pointer shadow-md"
+                >
+                  <Link2 className="w-3.5 h-3.5" />
+                  <span>Pair Players</span>
+                </button>
+                <button
+                  type="button"
                   onClick={() => setShowManagePlayersModal(true)}
                   className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs transition-all cursor-pointer"
                 >
@@ -892,6 +930,8 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
                     ? courts.filter((c) => eligibleCourtIdList.includes(c.id)).map((c) => c.name).join(', ')
                     : 'All Courts';
 
+                  const partner = sp.pairedPartnerId ? players.find((p) => p.id === sp.pairedPartnerId) : null;
+
                   return (
                     <div
                       key={sp.playerId}
@@ -906,19 +946,39 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
                             <span className="text-xs font-bold text-slate-100">{sp.player.name}</span>
                           </div>
 
-                          {/* Bidirectional PAYG / Permanent Toggle */}
-                          <button
-                            type="button"
-                            onClick={() => onTogglePlayerPAYG && onTogglePlayerPAYG(sp.playerId, isPlayerPAYG)}
-                            title="Click to toggle between PAYG and Permanent"
-                            className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase transition-all cursor-pointer ${
-                              isPlayerPAYG
-                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30'
-                                : 'bg-sky-500/20 text-sky-300 border border-sky-500/40 hover:bg-sky-500/30'
-                            }`}
-                          >
-                            {isPlayerPAYG ? 'PAYG' : 'Permanent'}
-                          </button>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            {/* Bidirectional PAYG / Permanent Toggle */}
+                            <button
+                              type="button"
+                              onClick={() => onTogglePlayerPAYG && onTogglePlayerPAYG(sp.playerId, isPlayerPAYG)}
+                              title="Click to toggle between PAYG and Permanent"
+                              className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase transition-all cursor-pointer ${
+                                isPlayerPAYG
+                                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30'
+                                  : 'bg-sky-500/20 text-sky-300 border border-sky-500/40 hover:bg-sky-500/30'
+                              }`}
+                            >
+                              {isPlayerPAYG ? 'PAYG' : 'Permanent'}
+                            </button>
+
+                            {/* Paired Partner Badge */}
+                            {partner && (
+                              <div className="inline-flex items-center gap-1 text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40 px-2 py-0.5 rounded-full">
+                                <Link2 className="w-3 h-3" />
+                                <span>Pair: {partner.name}</span>
+                                {onUnpairPlayers && (
+                                  <button
+                                    type="button"
+                                    onClick={() => onUnpairPlayers(sp.playerId)}
+                                    className="ml-0.5 text-purple-400 hover:text-rose-400 cursor-pointer"
+                                    title="Unpair players"
+                                  >
+                                    <Unlink className="w-3 h-3" />
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
                         </div>
 
                         {/* Status chip */}
@@ -1215,6 +1275,18 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
                 >
                   Paused ({pausedPlayers.length})
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setRotationTab('PAIRS')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                    rotationTab === 'PAIRS'
+                      ? 'bg-purple-600 text-white font-black shadow-md shadow-purple-950'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Link2 className="w-3.5 h-3.5" />
+                  <span>Paired Players ({pairedCouples.length})</span>
+                </button>
               </div>
 
               <span className="text-xs text-slate-400">
@@ -1234,23 +1306,37 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
                       .map((sp) => {
                         const count = getPlayerGamesCount(sp.playerId);
                         const isPAYG = Boolean(sp.isPAYG || sp.player.isPAYG);
+                        const partner = sp.pairedPartnerId ? players.find((p) => p.id === sp.pairedPartnerId) : null;
+                        const partnerWaiting = partner ? waitingPlayers.some((w) => w.playerId === partner.id) : false;
+
                         return (
                           <div
                             key={sp.playerId}
                             className="bg-slate-950 border border-slate-800/80 rounded-xl p-3 flex items-center justify-between"
                           >
-                            <div className="space-y-0.5">
+                            <div className="space-y-1">
                               <div className="flex items-center gap-1.5">
                                 <span className={`text-xs ${sp.player.gender === 'FEMALE' ? 'text-pink-400' : 'text-sky-400'}`}>
                                   {sp.player.gender === 'FEMALE' ? '♀' : '♂'}
                                 </span>
                                 <span className="text-xs font-bold text-slate-200">{sp.player.name}</span>
                               </div>
-                              <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                              
+                              <div className="flex items-center gap-1.5 flex-wrap text-[11px] text-slate-400">
                                 <span>Games: <strong className="text-slate-200">{count}</strong></span>
                                 {isPAYG && (
                                   <span className="px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 text-[9px] font-bold">
                                     PAYG
+                                  </span>
+                                )}
+                                {partner && (
+                                  <span className={`px-1.5 py-0.2 rounded-full text-[9px] font-bold flex items-center gap-1 ${
+                                    partnerWaiting
+                                      ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40'
+                                      : 'bg-slate-800 text-slate-400'
+                                  }`}>
+                                    <Link2 className="w-2.5 h-2.5" />
+                                    <span>Pair: {partner.name}</span>
                                   </span>
                                 )}
                               </div>
@@ -1359,6 +1445,114 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
                 )}
               </div>
             )}
+
+            {/* Sub-tab: Pair Players */}
+            {rotationTab === 'PAIRS' && (
+              <div className="space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-950 p-3 rounded-xl border border-slate-800">
+                  <p className="text-xs text-slate-400">
+                    All paired players in this session. Paired players are given top priority to play together on courts when both are waiting in queue.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowPairModal(true)}
+                    className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs transition-all cursor-pointer shadow-md shrink-0"
+                  >
+                    <Link2 className="w-3.5 h-3.5" />
+                    <span>+ Pair Players</span>
+                  </button>
+                </div>
+
+                {pairedCouples.length === 0 ? (
+                  <div className="p-8 rounded-xl bg-slate-950 border border-dashed border-slate-800 text-center space-y-2">
+                    <div className="w-10 h-10 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center mx-auto text-lg border border-purple-500/20">
+                      🔗
+                    </div>
+                    <p className="text-xs text-slate-400">No paired players in this session yet.</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {pairedCouples.map(({ p1, p2, p1Join, p2Join }) => {
+                      const p1Waiting = !p1Join.isPaused && !p1Join.isPlaying;
+                      const p2Waiting = !p2Join.isPaused && !p2Join.isPlaying;
+                      const isBothWaiting = p1Waiting && p2Waiting;
+                      const isAnyPlaying = p1Join.isPlaying || p2Join.isPlaying;
+                      const isAnyPaused = p1Join.isPaused || p2Join.isPaused;
+
+                      let statusBadge = (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                          🔗 Waiting Together (Priority)
+                        </span>
+                      );
+                      if (isAnyPlaying) {
+                        statusBadge = (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/40">
+                            Playing on Court
+                          </span>
+                        );
+                      } else if (isAnyPaused) {
+                        statusBadge = (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                            Paused
+                          </span>
+                        );
+                      } else if (!isBothWaiting) {
+                        statusBadge = (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-800 text-slate-400">
+                            Waiting Separately
+                          </span>
+                        );
+                      }
+
+                      return (
+                        <div
+                          key={`${p1.id}-${p2.id}`}
+                          className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-3 flex flex-col justify-between"
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <div className="w-8 h-8 rounded-xl bg-purple-500/20 text-purple-400 flex items-center justify-center text-xs font-bold border border-purple-500/30 shrink-0">
+                                🔗
+                              </div>
+                              <div>
+                                <div className="text-xs font-bold text-slate-100 flex items-center gap-1">
+                                  <span>{p1.name}</span>
+                                  <span className="text-purple-400 font-normal">&</span>
+                                  <span>{p2.name}</span>
+                                </div>
+                                <div className="text-[10px] text-slate-400">
+                                  Games Played: {getPlayerGamesCount(p1.id)} / {getPlayerGamesCount(p2.id)}
+                                </div>
+                              </div>
+                            </div>
+
+                            {onUnpairPlayers && (
+                              <button
+                                type="button"
+                                onClick={() => onUnpairPlayers(p1.id)}
+                                className="p-1.5 rounded-lg bg-slate-900 hover:bg-rose-500/20 text-slate-400 hover:text-rose-300 border border-slate-800 transition-all cursor-pointer flex items-center gap-1 text-[11px] font-bold shrink-0"
+                                title="Unpair these players"
+                              >
+                                <Unlink className="w-3.5 h-3.5" />
+                                <span>Unpair</span>
+                              </button>
+                            )}
+                          </div>
+
+                          <div className="pt-2 border-t border-slate-800/60 flex items-center justify-between gap-2">
+                            {statusBadge}
+                            <span className="text-[10px] font-mono text-slate-500 uppercase">
+                              {p1.gender === p2.gender ? `${p1.gender} DOUBLES` : 'MIXED DOUBLES'}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
           </div>
         </div>
       )}
@@ -2747,6 +2941,135 @@ export const LiveSessionScreen: React.FC<LiveSessionScreenProps> = ({
         </div>
       )}
 
+      {/* Pair Players Modal */}
+      {showPairModal && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl animate-scale-up">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <h3 className="text-base font-black text-slate-100 flex items-center gap-2">
+                <Link2 className="w-5 h-5 text-purple-400" />
+                <span>Pair Players for Live Games</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPairModal(false);
+                  setPairP1(null);
+                  setPairP2(null);
+                  setPairError(null);
+                }}
+                className="text-slate-400 hover:text-white p-1 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Paired players will be prioritized to play together as teammates on courts whenever both players are available in the waiting queue.
+            </p>
+
+            {pairError && (
+              <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs font-semibold flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{pairError}</span>
+              </div>
+            )}
+
+            <div className="space-y-3">
+              {/* Player 1 Selection */}
+              <div>
+                <label className="block text-xs font-bold text-slate-300 uppercase mb-1">Select Player 1</label>
+                <select
+                  value={pairP1 ?? ''}
+                  onChange={(e) => {
+                    const id = Number(e.target.value);
+                    setPairP1(id || null);
+                    setPairError(null);
+                  }}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-slate-200 font-bold focus:outline-none focus:border-purple-500"
+                >
+                  <option value="">-- Choose First Player --</option>
+                  {sessionPlayers.map((sp) => {
+                    const partner = sp.pairedPartnerId ? players.find((p) => p.id === sp.pairedPartnerId) : null;
+                    return (
+                      <option key={sp.playerId} value={sp.playerId}>
+                        {sp.player.name} {partner ? `(Paired with ${partner.name})` : ''}
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+
+              {/* Player 2 Selection */}
+              <div>
+                <label className="block text-xs font-bold text-slate-300 uppercase mb-1">Select Player 2 (Partner)</label>
+                <select
+                  value={pairP2 ?? ''}
+                  onChange={(e) => {
+                    const id = Number(e.target.value);
+                    setPairP2(id || null);
+                    setPairError(null);
+                  }}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-slate-200 font-bold focus:outline-none focus:border-purple-500"
+                >
+                  <option value="">-- Choose Second Player --</option>
+                  {sessionPlayers
+                    .filter((sp) => sp.playerId !== pairP1)
+                    .map((sp) => {
+                      const partner = sp.pairedPartnerId ? players.find((p) => p.id === sp.pairedPartnerId) : null;
+                      return (
+                        <option key={sp.playerId} value={sp.playerId}>
+                          {sp.player.name} {partner ? `(Paired with ${partner.name})` : ''}
+                        </option>
+                      );
+                    })}
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPairModal(false);
+                  setPairP1(null);
+                  setPairP2(null);
+                  setPairError(null);
+                }}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-slate-200 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!pairP1 || !pairP2) {
+                    setPairError('Please select two distinct players to create a pair.');
+                    return;
+                  }
+                  if (pairP1 === pairP2) {
+                    setPairError('Player 1 and Player 2 must be different players.');
+                    return;
+                  }
+                  if (onPairPlayers) {
+                    await onPairPlayers(pairP1, pairP2);
+                  }
+                  setShowPairModal(false);
+                  setPairP1(null);
+                  setPairP2(null);
+                  setPairError(null);
+                }}
+                className="px-5 py-2.5 rounded-xl text-xs font-bold bg-purple-600 hover:bg-purple-500 text-white shadow-lg cursor-pointer flex items-center gap-1.5"
+              >
+                <Link2 className="w-4 h-4" />
+                <span>Save Player Pair</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };
+

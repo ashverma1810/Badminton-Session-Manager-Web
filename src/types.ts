@@ -50,6 +50,15 @@ export interface SessionPlayerJoinEntity {
   isPAYG: boolean;
   adjustedGames: number;
   pausedAtMatchCount: number | null;
+  pairedPartnerId?: number | null;
+}
+
+export interface PlayerPairEntity {
+  id: string;
+  sessionId: number;
+  player1Id: number;
+  player2Id: number;
+  createdAt: number;
 }
 
 export interface CourtEntity {

@@ -1504,6 +1504,74 @@ export const App: React.FC = () => {
     await syncSessionPlayerToRealtime(currentClubId, activeSession.id, updatedJoin);
   };
 
+  const handlePairPlayers = async (player1Id: number, player2Id: number) => {
+    if (!activeSession || !currentClubId) return;
+
+    const p1Join = activeJoins.find((j) => j.playerId === player1Id);
+    const p2Join = activeJoins.find((j) => j.playerId === player2Id);
+    if (!p1Join || !p2Join) return;
+
+    const p1OldPartnerId = p1Join.pairedPartnerId;
+    const p2OldPartnerId = p2Join.pairedPartnerId;
+
+    const nextJoins = activeJoins.map((j) => {
+      if (j.playerId === player1Id) {
+        return { ...j, pairedPartnerId: player2Id };
+      }
+      if (j.playerId === player2Id) {
+        return { ...j, pairedPartnerId: player1Id };
+      }
+      if (p1OldPartnerId && j.playerId === p1OldPartnerId) {
+        return { ...j, pairedPartnerId: null };
+      }
+      if (p2OldPartnerId && j.playerId === p2OldPartnerId) {
+        return { ...j, pairedPartnerId: null };
+      }
+      return j;
+    });
+
+    setActiveJoins(nextJoins);
+    setAllJoinsMap((prev) => ({ ...prev, [activeSession.id]: nextJoins }));
+
+    const updatedP1 = nextJoins.find((j) => j.playerId === player1Id);
+    const updatedP2 = nextJoins.find((j) => j.playerId === player2Id);
+    if (updatedP1) await syncSessionPlayerToRealtime(currentClubId, activeSession.id, updatedP1);
+    if (updatedP2) await syncSessionPlayerToRealtime(currentClubId, activeSession.id, updatedP2);
+    if (p1OldPartnerId) {
+      const oldP1 = nextJoins.find((j) => j.playerId === p1OldPartnerId);
+      if (oldP1) await syncSessionPlayerToRealtime(currentClubId, activeSession.id, oldP1);
+    }
+    if (p2OldPartnerId) {
+      const oldP2 = nextJoins.find((j) => j.playerId === p2OldPartnerId);
+      if (oldP2) await syncSessionPlayerToRealtime(currentClubId, activeSession.id, oldP2);
+    }
+  };
+
+  const handleUnpairPlayers = async (playerId: number) => {
+    if (!activeSession || !currentClubId) return;
+    const join = activeJoins.find((j) => j.playerId === playerId);
+    if (!join) return;
+
+    const partnerId = join.pairedPartnerId;
+
+    const nextJoins = activeJoins.map((j) => {
+      if (j.playerId === playerId || (partnerId && j.playerId === partnerId)) {
+        return { ...j, pairedPartnerId: null };
+      }
+      return j;
+    });
+
+    setActiveJoins(nextJoins);
+    setAllJoinsMap((prev) => ({ ...prev, [activeSession.id]: nextJoins }));
+
+    const updatedJ1 = nextJoins.find((j) => j.playerId === playerId);
+    if (updatedJ1) await syncSessionPlayerToRealtime(currentClubId, activeSession.id, updatedJ1);
+    if (partnerId) {
+      const updatedJ2 = nextJoins.find((j) => j.playerId === partnerId);
+      if (updatedJ2) await syncSessionPlayerToRealtime(currentClubId, activeSession.id, updatedJ2);
+    }
+  };
+
   // Add PAYG Player Walk-in with Late Arrival Calculation
   const handleAddPAYGPlayerToSession = async (name: string, gender: Gender) => {
     if (!activeSession || !currentClubId) return;
@@ -2088,6 +2156,8 @@ export const App: React.FC = () => {
               onTogglePlayerPAYG={handleTogglePlayerPAYG}
               onNavigateToSessions={() => setActiveTab('CLUB')}
               onEditMatchScore={handleEditMatchScore}
+              onPairPlayers={handlePairPlayers}
+              onUnpairPlayers={handleUnpairPlayers}
               auditLogs={activeSession ? (allAuditLogsMap[activeSession.id] || []) : []}
             />
           )}
