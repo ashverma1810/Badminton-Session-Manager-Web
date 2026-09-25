@@ -25,12 +25,12 @@ import {
 } from 'lucide-react';
 import { sendPasswordResetEmail, signOut } from 'firebase/auth';
 import { auth, UserClubAssociation } from '../lib/firebase';
-import type { ClubEntity, GameType } from '../types';
+import type { ClubEntity, GameType, ManagerRole } from '../types';
 
 interface ClubSetupScreenProps {
   clubDetails: ClubEntity | null;
   currentClubId?: string | null;
-  currentUserRole?: 'CLUB_MANAGER' | 'SESSION_MANAGER';
+  currentUserRole?: ManagerRole;
   currentManagerName?: string | null;
   currentUserEmail?: string | null;
   onSaveClub: (updated: Partial<ClubEntity>) => Promise<void>;
@@ -439,9 +439,13 @@ export const ClubSetupScreen: React.FC<ClubSetupScreenProps> = ({
                 <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
                   currentUserRole === 'SESSION_MANAGER'
                     ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
-                    : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                    : (currentUserRole === 'SECONDARY_CLUB_MANAGER'
+                        ? 'bg-indigo-500/15 text-indigo-300 border border-indigo-500/30'
+                        : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30')
                 }`}>
-                  {currentUserRole === 'SESSION_MANAGER' ? 'Session Manager' : 'Club Manager'}
+                  {currentUserRole === 'SESSION_MANAGER' 
+                    ? 'Session Manager' 
+                    : (currentUserRole === 'SECONDARY_CLUB_MANAGER' ? 'Secondary Club Manager' : 'Primary Club Manager')}
                 </span>
               </div>
 
@@ -677,12 +681,22 @@ export const ClubSetupScreen: React.FC<ClubSetupScreenProps> = ({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-1.5">
                     <label className="text-xs font-bold text-slate-300">Target Score</label>
-                    <input
-                      type="number"
-                      value={regTargetScore}
-                      onChange={(e) => setRegTargetScore(Number(e.target.value))}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-slate-100 focus:outline-none focus:border-sky-500"
-                    />
+                    <div className="grid grid-cols-2 gap-2">
+                      {[15, 21].map((score) => (
+                        <button
+                          key={score}
+                          type="button"
+                          onClick={() => setRegTargetScore(score)}
+                          className={`py-2.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                            regTargetScore === score
+                              ? 'bg-sky-500/20 border-sky-500 text-sky-300 shadow-sm'
+                              : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          {score} pts
+                        </button>
+                      ))}
+                    </div>
                   </div>
 
                   <div className="space-y-1.5">
@@ -802,12 +816,22 @@ export const ClubSetupScreen: React.FC<ClubSetupScreenProps> = ({
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <label className="text-xs font-bold text-slate-300">Target Score</label>
-                  <input
-                    type="number"
-                    value={editTargetScore}
-                    onChange={(e) => setEditTargetScore(Number(e.target.value))}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-slate-100 focus:outline-none focus:border-sky-500"
-                  />
+                  <div className="grid grid-cols-2 gap-2">
+                    {[15, 21].map((score) => (
+                      <button
+                        key={score}
+                        type="button"
+                        onClick={() => setEditTargetScore(score)}
+                        className={`py-2.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                          editTargetScore === score
+                            ? 'bg-sky-500/20 border-sky-500 text-sky-300 shadow-sm'
+                            : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        {score} pts
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 <div className="space-y-1.5">

@@ -20,7 +20,8 @@ import {
   CheckSquare,
   Square,
   Check,
-  Activity
+  Activity,
+  Search
 } from 'lucide-react';
 import type { 
   SessionEntity, 
@@ -29,7 +30,9 @@ import type {
   MatchEntity, 
   ClubEntity,
   WeeklySessionEntity,
-  PlayerStats 
+  PlayerStats,
+  ScoreAuditLogEntity,
+  ManagerRole
 } from '../types';
 import { StatsCalculator, ReportExporter, isMatchValidAndCounted } from '../utils/badmintonLogic';
 import { MemberPerformanceModal } from './MemberPerformanceModal';
@@ -43,6 +46,8 @@ interface HistoryScreenProps {
   players: PlayerEntity[];
   weeklySessions?: WeeklySessionEntity[];
   onDeleteSession?: (sessionId: number) => Promise<void>;
+  allAuditLogsMap?: Record<number, ScoreAuditLogEntity[]>;
+  currentUserRole?: ManagerRole;
 }
 
 export const HistoryScreen: React.FC<HistoryScreenProps> = ({
@@ -53,6 +58,8 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
   players,
   weeklySessions = [],
   onDeleteSession,
+  allAuditLogsMap = {},
+  currentUserRole,
 }) => {
   // Top-level Navigation: Session History | Session Leaderboard | Lifetime Leaderboard | Team Pair Ranking
   const [activeTab, setActiveTab] = useState<'SESSIONS' | 'WEEKLY' | 'LIFETIME' | 'PAIR_RANKING'>('SESSIONS');
@@ -71,14 +78,20 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
   const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
   const [historyMultiSelectMode, setHistoryMultiSelectMode] = useState<boolean>(false);
   const [historySelectedSessionIds, setHistorySelectedSessionIds] = useState<number[]>([]);
-  const [sessionDetailTab, setSessionDetailTab] = useState<'MATCHES' | 'LEADERBOARD'>('MATCHES');
+  const [sessionDetailTab, setSessionDetailTab] = useState<'MATCHES' | 'LEADERBOARD' | 'AUDIT_LOGS'>('MATCHES');
   const [sessionGroupFilter, setSessionGroupFilter] = useState<'ALL' | 'A' | 'B' | 'C'>('ALL');
   const [sessionGenderFilter, setSessionGenderFilter] = useState<'ALL' | 'MALE' | 'FEMALE'>('ALL');
+  const [showDeletedSessions, setShowDeletedSessions] = useState<boolean>(false);
 
   // Multi-Session Leaderboard Sub-states
   const [userSelectedSessionIds, setUserSelectedSessionIds] = useState<number[] | null>(null);
   const [sessionLeaderboardTierFilter, setSessionLeaderboardTierFilter] = useState<'ALL' | 'A' | 'B' | 'C'>('ALL');
   const [sessionLeaderboardGenderFilter, setSessionLeaderboardGenderFilter] = useState<'ALL' | 'MALE' | 'FEMALE'>('ALL');
+
+  // Search queries
+  const [sessionHistorySearchQuery, setSessionHistorySearchQuery] = useState<string>('');
+  const [sessionLeaderboardSearchQuery, setSessionLeaderboardSearchQuery] = useState<string>('');
+  const [lifetimeSearchQuery, setLifetimeSearchQuery] = useState<string>('');
 
   // Lifetime Leaderboard Sub-states
   const [lifetimeTierFilter, setLifetimeTierFilter] = useState<'ALL' | 'A' | 'B' | 'C'>('ALL');
@@ -137,10 +150,11 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
   // Helper to determine if a match has an actual recorded score (0-0 excluded)
   const hasRecordedScore = (m: MatchEntity) => isMatchValidAndCounted(m);
 
-  // Requirement 4: Completed/Ended Sessions with at least one match having a recorded score
+  // Completed/Ended Active Sessions (excluding soft-deleted sessions)
   const completedSessions = useMemo(() => {
     return sessions
       .filter((s) => {
+        if (s.isDeleted) return false;
         if (s.isActive || s.status === 'Active') return false;
         const matches = allMatchesMap[s.id] || [];
         return matches.some(hasRecordedScore);
@@ -148,8 +162,19 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
       .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   }, [sessions, allMatchesMap]);
 
-  // Selected sessions for Session History tab (supports single and multiple session selection)
+  // Soft-deleted Sessions
+  const deletedSessions = useMemo(() => {
+    return sessions
+      .filter((s) => Boolean(s.isDeleted))
+      .sort((a, b) => (b.deletedAt || b.createdAt || 0) - (a.deletedAt || a.createdAt || 0));
+  }, [sessions]);
+
+  // Selected sessions for Session History tab
   const activeHistorySessions = useMemo(() => {
+    const selectedSession = sessions.find((s) => s.id === selectedSessionId);
+    if (selectedSession && selectedSession.isDeleted) {
+      return [selectedSession];
+    }
     if (!completedSessions.length) return [];
     if (historyMultiSelectMode) {
       if (historySelectedSessionIds.length > 0) {
@@ -159,7 +184,7 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
     }
     const single = completedSessions.find((s) => s.id === selectedSessionId) || completedSessions[0];
     return single ? [single] : [];
-  }, [completedSessions, historyMultiSelectMode, historySelectedSessionIds, selectedSessionId]);
+  }, [sessions, completedSessions, historyMultiSelectMode, historySelectedSessionIds, selectedSessionId]);
 
   const currentSession = activeHistorySessions[0] || null;
 
@@ -193,8 +218,29 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
     if (sessionGenderFilter !== 'ALL') {
       list = list.filter((s) => s.gender === sessionGenderFilter);
     }
+    if (sessionHistorySearchQuery.trim()) {
+      const q = sessionHistorySearchQuery.trim().toLowerCase();
+      list = list.filter((s) => s.name.toLowerCase().includes(q));
+    }
     return list;
-  }, [rankedSessionStats, groupedSessionTiers, sessionGroupFilter, sessionGenderFilter]);
+  }, [rankedSessionStats, groupedSessionTiers, sessionGroupFilter, sessionGenderFilter, sessionHistorySearchQuery]);
+
+  const displayedCurrentMatches = useMemo(() => {
+    if (!sessionHistorySearchQuery.trim()) return currentMatches;
+    const q = sessionHistorySearchQuery.trim().toLowerCase();
+    return currentMatches.filter((m) => {
+      const p1A = players.find((p) => p.id === m.teamAPlayer1Id)?.name || '';
+      const p2A = m.teamAPlayer2Id ? players.find((p) => p.id === m.teamAPlayer2Id)?.name || '' : '';
+      const p1B = players.find((p) => p.id === m.teamBPlayer1Id)?.name || '';
+      const p2B = m.teamBPlayer2Id ? players.find((p) => p.id === m.teamBPlayer2Id)?.name || '' : '';
+      return (
+        p1A.toLowerCase().includes(q) ||
+        p2A.toLowerCase().includes(q) ||
+        p1B.toLowerCase().includes(q) ||
+        p2B.toLowerCase().includes(q)
+      );
+    });
+  }, [currentMatches, sessionHistorySearchQuery, players]);
 
   // --- Group completed sessions by Session Name (instead of on the day it is played) ---
   const sessionNameGroups = useMemo(() => {
@@ -350,8 +396,12 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
     if (sessionLeaderboardGenderFilter !== 'ALL') {
       list = list.filter((s) => s.gender === sessionLeaderboardGenderFilter);
     }
+    if (sessionLeaderboardSearchQuery.trim()) {
+      const q = sessionLeaderboardSearchQuery.trim().toLowerCase();
+      list = list.filter((s) => s.name.toLowerCase().includes(q));
+    }
     return list;
-  }, [rankedSessionLeaderboardStats, groupedSessionLeaderboardTiers, sessionLeaderboardTierFilter, sessionLeaderboardGenderFilter]);
+  }, [rankedSessionLeaderboardStats, groupedSessionLeaderboardTiers, sessionLeaderboardTierFilter, sessionLeaderboardGenderFilter, sessionLeaderboardSearchQuery]);
 
   // --- LIFETIME STATS (Across only completed, non-deleted sessions with recorded scores) ---
   const allCompletedMatches: MatchEntity[] = useMemo(() => {
@@ -381,8 +431,12 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
     if (lifetimeGenderFilter !== 'ALL') {
       list = list.filter((s) => s.gender === lifetimeGenderFilter);
     }
+    if (lifetimeSearchQuery.trim()) {
+      const q = lifetimeSearchQuery.trim().toLowerCase();
+      list = list.filter((s) => s.name.toLowerCase().includes(q));
+    }
     return list;
-  }, [rankedLifetimeStats, groupedLifetimeTiers, lifetimeTierFilter, lifetimeGenderFilter]);
+  }, [rankedLifetimeStats, groupedLifetimeTiers, lifetimeTierFilter, lifetimeGenderFilter, lifetimeSearchQuery]);
 
   // Handlers for Exports
   const handleExportSinglePdf = () => {
@@ -673,11 +727,11 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
                           {session.status || 'End'}
                         </span>
                         
-                        {/* Requirement 3: Session Deletion Button on Card */}
-                        {onDeleteSession && (
+                        {/* Session Deletion Button - Restricted to Primary Club Manager ONLY */}
+                        {onDeleteSession && currentUserRole === 'CLUB_MANAGER' && !session.isDeleted && (
                           <button
                             type="button"
-                            title="Delete Session History"
+                            title="Delete Session History (Primary Club Manager Only)"
                             onClick={(e) => {
                               e.stopPropagation();
                               setSessionToDelete(session);
@@ -714,6 +768,59 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
                   No completed sessions with recorded scores found.
                 </div>
               )}
+
+              {/* DELETED SESSIONS COLLAPSIBLE DIRECTORY SECTION */}
+              {deletedSessions.length > 0 && (
+                <div className="pt-4 border-t border-slate-200 dark:border-slate-800/80 space-y-3">
+                  <button
+                    type="button"
+                    onClick={() => setShowDeletedSessions((prev) => !prev)}
+                    className="w-full flex items-center justify-between p-3 rounded-xl bg-rose-500/5 hover:bg-rose-500/10 border border-rose-500/20 text-xs font-bold text-rose-500 dark:text-rose-400 transition-all cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Trash2 className="w-4 h-4 text-rose-500" />
+                      <span>Deleted Sessions ({deletedSessions.length})</span>
+                    </div>
+                    <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${showDeletedSessions ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  {showDeletedSessions && (
+                    <div className="space-y-2 max-h-72 overflow-y-auto pr-1 animate-in fade-in">
+                      {deletedSessions.map((ds) => {
+                        const isSelected = selectedSessionId === ds.id;
+                        const matchesCount = (allMatchesMap[ds.id] || []).filter(hasRecordedScore).length;
+                        return (
+                          <div
+                            key={ds.id}
+                            onClick={() => {
+                              setSelectedSessionId(ds.id);
+                              setHistoryMultiSelectMode(false);
+                            }}
+                            className={`p-3 rounded-xl border text-xs cursor-pointer transition-all ${
+                              isSelected
+                                ? 'bg-rose-500/10 border-rose-500/50 text-rose-600 dark:text-rose-300 shadow-sm font-bold'
+                                : 'bg-slate-50 dark:bg-slate-900/60 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:border-slate-300 dark:hover:border-slate-700'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2 mb-1">
+                              <span className="font-bold truncate">{ds.name}</span>
+                              <span className="px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-600 dark:text-rose-400 text-[10px] font-bold border border-rose-500/30 shrink-0">
+                                Deleted
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center justify-between">
+                              <span>Matches: {matchesCount}</span>
+                              {ds.deletedAt && (
+                                <span>{new Date(ds.deletedAt).toLocaleDateString('en-GB')}</span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
@@ -724,6 +831,19 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
               {/* Session Overview Header */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
                 <div>
+                  {currentSession.isDeleted && (
+                    <div className="mb-3 p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-600 dark:text-rose-400 space-y-1">
+                      <div className="flex items-center gap-2 font-bold text-rose-600 dark:text-rose-300">
+                        <AlertTriangle className="w-4 h-4 text-rose-500" />
+                        <span>Deleted Session Notice</span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                        This session was soft-deleted by <strong>{currentSession.deletedBy || 'Primary Club Manager'}</strong>
+                        {currentSession.deletedAt ? ` on ${new Date(currentSession.deletedAt).toLocaleString('en-GB')}` : ''}.
+                        All scores and matches from this deleted session are <strong>strictly excluded from Player Rankings and Leaderboards</strong>.
+                      </p>
+                    </div>
+                  )}
                   {activeHistorySessions.length > 1 ? (
                     <>
                       <div className="flex items-center gap-2">
@@ -782,8 +902,8 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
                     <span>CSV</span>
                   </button>
 
-                  {/* Requirement 3: Delete Session button in header */}
-                  {onDeleteSession && (
+                  {/* Delete Session button in header - Primary Club Manager ONLY */}
+                  {onDeleteSession && currentUserRole === 'CLUB_MANAGER' && !currentSession.isDeleted && (
                     <button
                       onClick={() => setSessionToDelete(currentSession)}
                       className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-50 dark:bg-rose-950/30 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-900/60 font-bold text-xs transition-colors cursor-pointer"
@@ -796,35 +916,69 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
               </div>
 
               {/* Subtabs: Match Records vs Single Session Leaderboard */}
-              <div className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-2">
-                <button
-                  onClick={() => setSessionDetailTab('MATCHES')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-all ${
-                    sessionDetailTab === 'MATCHES'
-                      ? 'bg-slate-900 dark:bg-slate-800 text-white shadow-sm'
-                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
-                  }`}
-                >
-                  Match Records ({currentMatches.length})
-                </button>
-                <button
-                  onClick={() => setSessionDetailTab('LEADERBOARD')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-all ${
-                    sessionDetailTab === 'LEADERBOARD'
-                      ? 'bg-slate-900 dark:bg-slate-800 text-white shadow-sm'
-                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
-                  }`}
-                >
-                  Session Leaderboard ({sessionStats.length})
-                </button>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setSessionDetailTab('MATCHES')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-all ${
+                      sessionDetailTab === 'MATCHES'
+                        ? 'bg-slate-900 dark:bg-slate-800 text-white shadow-sm'
+                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    Match Records ({currentMatches.length})
+                  </button>
+                  <button
+                    onClick={() => setSessionDetailTab('LEADERBOARD')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-all ${
+                      sessionDetailTab === 'LEADERBOARD'
+                        ? 'bg-slate-900 dark:bg-slate-800 text-white shadow-sm'
+                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    Session Leaderboard ({sessionStats.length})
+                  </button>
+                  <button
+                    onClick={() => setSessionDetailTab('AUDIT_LOGS')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-all flex items-center gap-1.5 ${
+                      sessionDetailTab === 'AUDIT_LOGS'
+                        ? 'bg-amber-600 dark:bg-amber-500 text-white shadow-sm'
+                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    <History className="w-3.5 h-3.5" />
+                    <span>Audit Logs ({selectedSessionId ? (allAuditLogsMap[selectedSessionId] || []).length : 0})</span>
+                  </button>
+                </div>
+
+                {/* Player Search Input */}
+                <div className="relative flex-1 max-w-xs">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={sessionHistorySearchQuery}
+                    onChange={(e) => setSessionHistorySearchQuery(e.target.value)}
+                    placeholder="Search by player name..."
+                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:border-sky-500 font-medium"
+                  />
+                  {sessionHistorySearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setSessionHistorySearchQuery('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 text-xs cursor-pointer"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* MATCH RECORDS VIEW */}
               {sessionDetailTab === 'MATCHES' && (
                 <div className="space-y-3">
-                  {currentMatches.length > 0 ? (
+                  {displayedCurrentMatches.length > 0 ? (
                     <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
-                      {currentMatches
+                      {displayedCurrentMatches
                         .sort((a, b) => a.matchNumber - b.matchNumber)
                         .map((m) => {
                           const courtName = currentCourts.find((c) => c.id === m.courtId)?.name || `Court ${m.courtId}`;
@@ -1028,6 +1182,92 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
                       </tbody>
                     </table>
                   </div>
+                </div>
+              )}
+
+              {/* AUDIT LOGS VIEW */}
+              {sessionDetailTab === 'AUDIT_LOGS' && (
+                <div className="space-y-3">
+                  {(!selectedSessionId || !(allAuditLogsMap[selectedSessionId] || []).length) ? (
+                    <div className="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl p-8 text-center space-y-2">
+                      <History className="w-8 h-8 text-slate-400 dark:text-slate-600 mx-auto" />
+                      <p className="text-xs font-bold text-slate-700 dark:text-slate-400">No Score Audit Logs Recorded For This Session</p>
+                      <p className="text-[11px] text-slate-500">
+                        No match scores were edited during this session instance.
+                      </p>
+                    </div>
+                  ) : (
+                    (allAuditLogsMap[selectedSessionId] || []).map((log) => (
+                      <div
+                        key={log.id}
+                        className="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 space-y-3 text-xs"
+                      >
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-900 pb-2">
+                          <div className="flex items-center gap-2">
+                            <span className="px-2 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 font-mono text-[10px] font-bold border border-amber-500/20">
+                              Match #{log.matchNumber}
+                            </span>
+                            <span className="font-bold text-slate-800 dark:text-slate-200">{log.courtName}</span>
+                            {log.weeklySessionName && (
+                              <span className="px-2 py-0.5 rounded bg-sky-500/10 text-sky-600 dark:text-sky-400 text-[10px] font-bold border border-sky-500/20">
+                                {log.weeklySessionName}
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">
+                            {new Date(log.timestamp).toLocaleString('en-GB', {
+                              day: '2-digit',
+                              month: 'short',
+                              year: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                              second: '2-digit'
+                            })}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 bg-white dark:bg-slate-900/50 p-3 rounded-xl border border-slate-200 dark:border-slate-800/80">
+                          {/* Who updated */}
+                          <div className="space-y-1">
+                            <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Updated By</span>
+                            <div className="font-bold text-slate-900 dark:text-slate-200">{log.updatedByName}</div>
+                            <div className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">{log.updatedByEmail}</div>
+                            <div className="flex items-center gap-2 pt-0.5">
+                              <span className="px-2 py-0.5 rounded bg-purple-500/10 text-purple-600 dark:text-purple-400 text-[10px] font-bold border border-purple-500/20">
+                                {log.updatedByRole}
+                              </span>
+                              {log.updatedByUid && (
+                                <span className="text-[9px] text-slate-400 dark:text-slate-500 font-mono truncate">UID: {log.updatedByUid}</span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Changes */}
+                          <div className="space-y-1">
+                            <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Score Changes</span>
+                            <div className="text-slate-800 dark:text-slate-300 font-medium">
+                              {log.teamAPlayers} vs {log.teamBPlayers}
+                            </div>
+                            <div className="flex items-center gap-2 font-mono font-bold text-xs pt-1">
+                              <span className="text-rose-500 dark:text-rose-400 line-through">
+                                {log.oldTeamAScore} - {log.oldTeamBScore}
+                              </span>
+                              <span className="text-slate-400">➜</span>
+                              <span className="text-emerald-600 dark:text-emerald-400">
+                                {log.newTeamAScore} - {log.newTeamBScore}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Session context */}
+                        <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center gap-3">
+                          <span>Session: <strong className="text-slate-700 dark:text-slate-300">{log.sessionName}</strong></span>
+                          <span>Date: <strong className="text-slate-700 dark:text-slate-300">{log.sessionDate}</strong></span>
+                        </div>
+                      </div>
+                    ))
+                  )}
                 </div>
               )}
 
@@ -1321,6 +1561,27 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
                     >
                       Women
                     </button>
+                  </div>
+
+                  {/* Player Search Input */}
+                  <div className="relative flex-1 max-w-xs">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={sessionLeaderboardSearchQuery}
+                      onChange={(e) => setSessionLeaderboardSearchQuery(e.target.value)}
+                      placeholder="Search by player name..."
+                      className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:border-sky-500 font-medium"
+                    />
+                    {sessionLeaderboardSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setSessionLeaderboardSearchQuery('')}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 text-xs cursor-pointer"
+                      >
+                        ✕
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1621,6 +1882,27 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
                 >
                   Women
                 </button>
+              </div>
+
+              {/* Player Search Input */}
+              <div className="relative flex-1 max-w-xs">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={lifetimeSearchQuery}
+                  onChange={(e) => setLifetimeSearchQuery(e.target.value)}
+                  placeholder="Search by player name..."
+                  className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:border-sky-500 font-medium"
+                />
+                {lifetimeSearchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setLifetimeSearchQuery('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 text-xs cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                )}
               </div>
             </div>
           </div>

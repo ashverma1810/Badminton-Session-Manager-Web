@@ -504,6 +504,7 @@ export interface MatchOptionDoubles {
   partnerCost: number;
   opponentCost: number;
   restSum: number;
+  pairPriorityBonus: number;
 }
 
 export interface MatchOptionSingles {
@@ -524,6 +525,14 @@ export const FairMatchAllocation = {
     courts: CourtEntity[]
   ): Omit<MatchEntity, 'id'> | null {
     const effectiveGameType = gameType === 'MULTI_TYPE' ? 'DOUBLES' : gameType;
+
+    // Build paired partner map from joins
+    const pairedPartnerMap: Record<number, number> = {};
+    joins.forEach((j) => {
+      if (j.pairedPartnerId != null) {
+        pairedPartnerMap[j.playerId] = j.pairedPartnerId;
+      }
+    });
 
     // 1. Identify currently playing players
     const activeMatches = matches.filter((m) => m.endTime == null);
@@ -677,6 +686,11 @@ export const FairMatchAllocation = {
                   });
                 });
 
+                // Fixed Pair Bonus: Check if Team A or Team B matches configured pairedPartnerMap
+                let pairPriorityBonus = 0;
+                if (pairedPartnerMap[pair.tA[0].id] === pair.tA[1].id) pairPriorityBonus += 10;
+                if (pairedPartnerMap[pair.tB[0].id] === pair.tB[1].id) pairPriorityBonus += 10;
+
                 options.push({
                   p1: pair.tA[0],
                   p2: pair.tA[1],
@@ -685,7 +699,8 @@ export const FairMatchAllocation = {
                   gamesPlayedSum: gpSum,
                   partnerCost,
                   opponentCost,
-                  restSum
+                  restSum,
+                  pairPriorityBonus
                 });
               });
             }
@@ -694,6 +709,7 @@ export const FairMatchAllocation = {
       }
 
       options.sort((a, b) => {
+        if (b.pairPriorityBonus !== a.pairPriorityBonus) return b.pairPriorityBonus - a.pairPriorityBonus;
         if (a.gamesPlayedSum !== b.gamesPlayedSum) return a.gamesPlayedSum - b.gamesPlayedSum;
         if (a.partnerCost !== b.partnerCost) return a.partnerCost - b.partnerCost;
         if (a.opponentCost !== b.opponentCost) return a.opponentCost - b.opponentCost;
@@ -768,6 +784,11 @@ export const FairMatchAllocation = {
                   });
                 });
 
+                // Fixed Pair Bonus: Check if Team A or Team B matches configured pairedPartnerMap
+                let pairPriorityBonus = 0;
+                if (pairedPartnerMap[pair.tA[0].id] === pair.tA[1].id) pairPriorityBonus += 10;
+                if (pairedPartnerMap[pair.tB[0].id] === pair.tB[1].id) pairPriorityBonus += 10;
+
                 options.push({
                   p1: pair.tA[0],
                   p2: pair.tA[1],
@@ -776,7 +797,8 @@ export const FairMatchAllocation = {
                   gamesPlayedSum: gpSum,
                   partnerCost,
                   opponentCost,
-                  restSum
+                  restSum,
+                  pairPriorityBonus
                 });
               });
             }
@@ -785,6 +807,7 @@ export const FairMatchAllocation = {
       }
 
       options.sort((a, b) => {
+        if (b.pairPriorityBonus !== a.pairPriorityBonus) return b.pairPriorityBonus - a.pairPriorityBonus;
         if (a.gamesPlayedSum !== b.gamesPlayedSum) return a.gamesPlayedSum - b.gamesPlayedSum;
         if (a.partnerCost !== b.partnerCost) return a.partnerCost - b.partnerCost;
         if (a.opponentCost !== b.opponentCost) return a.opponentCost - b.opponentCost;

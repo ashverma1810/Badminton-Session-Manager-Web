@@ -30,22 +30,24 @@ import {
 } from 'lucide-react';
 import type { 
   SessionEntity, 
-  WeeklySessionEntity, 
+  CourtEntity, 
   PlayerEntity, 
-  CourtMasterEntity, 
+  SessionPlayerJoinEntity, 
+  WeeklySessionEntity,
+  SessionManagerEntity,
+  ClubEntity,
+  CourtMasterEntity,
   GameType,
   Gender,
-  CourtEntity,
-  SessionManagerEntity,
-  ClubEntity
+  ManagerRole
 } from '../types';
 
 interface SessionsManagementScreenProps {
   activeSession: SessionEntity | null;
   allSessions: SessionEntity[];
   weeklySessions: WeeklySessionEntity[];
-  weeklyMembersMap: Record<number, number[]>; // weeklySessionId -> playerIds
-  weeklyCourtsMap: Record<number, CourtEntity[]>; // weeklySessionId -> courts
+  weeklyMembersMap: Record<number, number[]>;
+  weeklyCourtsMap: Record<number, CourtEntity[]>;
   players: PlayerEntity[];
   courtMasters: CourtMasterEntity[];
   sessionManagers: SessionManagerEntity[];
@@ -94,10 +96,10 @@ interface SessionsManagementScreenProps {
   onAddMember: (name: string, gender: Gender, isPAYG: boolean) => Promise<void>;
   onDeleteMember: (memberId: number) => Promise<void>;
   onToggleMemberPAYG: (memberId: number, currentPAYG: boolean) => Promise<void>;
-  onAddSessionManager: (name: string, email: string) => Promise<{ success: boolean; message?: string; uid?: string; isExistingUser?: boolean } | void>;
+  onAddSessionManager: (name: string, email: string, role?: ManagerRole) => Promise<{ success: boolean; message?: string; uid?: string; isExistingUser?: boolean } | void>;
   onDeleteSessionManager: (managerId: number) => Promise<void>;
   onResendPasswordReset?: (managerId: number, email: string) => Promise<{ success: boolean; message: string }>;
-  currentUserRole?: 'CLUB_MANAGER' | 'SESSION_MANAGER';
+  currentUserRole?: ManagerRole;
   currentManagerId?: number | null;
   currentManagerName?: string | null;
   onNavigateToLive: () => void;
@@ -193,10 +195,12 @@ export const SessionsManagementScreen: React.FC<SessionsManagementScreenProps> =
   const [showDeleteActiveConfirm, setShowDeleteActiveConfirm] = useState<boolean>(false);
 
   // --- 4. MANAGERS SUBTAB STATE ---
+  const isFullManager = currentUserRole === 'CLUB_MANAGER' || currentUserRole === 'SECONDARY_CLUB_MANAGER';
   const [managerSearch, setManagerSearch] = useState<string>('');
   const [showAddManagerModal, setShowAddManagerModal] = useState<boolean>(false);
   const [newManagerName, setNewManagerName] = useState<string>('');
   const [newManagerEmail, setNewManagerEmail] = useState<string>('');
+  const [newManagerRole, setNewManagerRole] = useState<ManagerRole>('SESSION_MANAGER');
   const [isCreatingManager, setIsCreatingManager] = useState<boolean>(false);
   const [resendingManagerId, setResendingManagerId] = useState<number | null>(null);
   const [managerFeedback, setManagerFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -229,7 +233,7 @@ export const SessionsManagementScreen: React.FC<SessionsManagementScreenProps> =
   // -------------------------------------------------------------
   const handleCreateWeekly = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!wName.trim()) return;
+    if (!isFullManager || !wName.trim()) return;
 
     let m1Id: number | null = null;
     if (wManager1 === 'ORGANISER') m1Id = 0;
@@ -386,10 +390,10 @@ export const SessionsManagementScreen: React.FC<SessionsManagementScreenProps> =
   // -------------------------------------------------------------
   const handleCreateManager = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (currentUserRole !== 'CLUB_MANAGER') {
+    if (!isFullManager) {
       setManagerFeedback({
         type: 'error',
-        message: 'Permission denied: Only Club Managers have rights to add new session managers.'
+        message: 'Permission denied: Only Primary or Secondary Club Managers have rights to add managers.'
       });
       setShowAddManagerModal(false);
       return;
@@ -397,22 +401,24 @@ export const SessionsManagementScreen: React.FC<SessionsManagementScreenProps> =
     if (!newManagerName.trim() || !newManagerEmail.trim()) return;
     setIsCreatingManager(true);
     try {
-      const res: any = await onAddSessionManager(newManagerName.trim(), newManagerEmail.trim());
+      const res: any = await onAddSessionManager(newManagerName.trim(), newManagerEmail.trim(), newManagerRole);
       if (res && !res.success) {
         setManagerFeedback({
           type: 'error',
-          message: res.message || 'Failed to create session manager account.'
+          message: res.message || 'Failed to create manager account.'
         });
       } else {
         const isReused = res?.isExistingUser;
+        const roleTitle = newManagerRole === 'SECONDARY_CLUB_MANAGER' ? 'Secondary Club Manager' : 'Session Manager';
         setManagerFeedback({
           type: 'success',
           message: isReused
-            ? `Existing account detected! Manager ${newManagerName.trim()} linked reusing existing Authentication UID. A password reset email was sent to ${newManagerEmail.trim()}.`
-            : `Manager ${newManagerName.trim()} created! A password reset email was sent to ${newManagerEmail.trim()}.`
+            ? `Existing account detected! ${roleTitle} ${newManagerName.trim()} linked reusing existing Authentication UID. A password reset email was sent to ${newManagerEmail.trim()}.`
+            : `${roleTitle} ${newManagerName.trim()} created! An account was added on Firebase authentication and a password reset email was sent to ${newManagerEmail.trim()}.`
         });
         setNewManagerName('');
         setNewManagerEmail('');
+        setNewManagerRole('SESSION_MANAGER');
         setShowAddManagerModal(false);
       }
     } catch (err: any) {
@@ -532,7 +538,7 @@ export const SessionsManagementScreen: React.FC<SessionsManagementScreenProps> =
           </button>
         )}
 
-        {activeSubTab === 'WEEKLY' && (
+        {activeSubTab === 'WEEKLY' && isFullManager && (
           <button
             type="button"
             onClick={() => setShowAddWeeklyModal(true)}
@@ -772,7 +778,7 @@ export const SessionsManagementScreen: React.FC<SessionsManagementScreenProps> =
                         className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-950 transition-all cursor-pointer"
                       >
                         <Play className="w-4 h-4 fill-white" />
-                        <span>Start Session</span>
+                        <span>Open Session</span>
                       </button>
 
                       <button
@@ -784,14 +790,16 @@ export const SessionsManagementScreen: React.FC<SessionsManagementScreenProps> =
                         <Edit2 className="w-4 h-4" />
                       </button>
 
-                      <button
-                        type="button"
-                        onClick={() => setWeeklyToDelete(session)}
-                        className="p-2.5 rounded-xl text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 border border-slate-800 hover:border-rose-500/30 transition-all cursor-pointer"
-                        title="Delete Session"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      {isFullManager && (
+                        <button
+                          type="button"
+                          onClick={() => setWeeklyToDelete(session)}
+                          className="p-2.5 rounded-xl text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 border border-slate-800 hover:border-rose-500/30 transition-all cursor-pointer"
+                          title="Delete Session"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -992,8 +1000,8 @@ export const SessionsManagementScreen: React.FC<SessionsManagementScreenProps> =
 
                   <div className="space-y-1.5">
                     <label className="text-xs font-bold text-slate-300">Target Winning Score</label>
-                    <div className="grid grid-cols-4 gap-2">
-                      {[11, 15, 21, 30].map((score) => (
+                    <div className="grid grid-cols-2 gap-2">
+                      {[15, 21].map((score) => (
                         <button
                           key={score}
                           type="button"
@@ -1148,17 +1156,21 @@ export const SessionsManagementScreen: React.FC<SessionsManagementScreenProps> =
 
             <div className="text-right sm:max-w-xs">
               <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold ${
-                currentUserRole === 'CLUB_MANAGER'
+                isFullManager
                   ? 'bg-sky-500/10 border border-sky-500/20 text-sky-400'
                   : 'bg-amber-500/10 border border-amber-500/20 text-amber-300'
               }`}>
                 <ShieldCheck className="w-3.5 h-3.5" />
-                <span>{currentUserRole === 'CLUB_MANAGER' ? 'Full System Permissions' : 'Session Manager View'}</span>
+                <span>
+                  {currentUserRole === 'CLUB_MANAGER' 
+                    ? 'Primary Club Manager' 
+                    : (currentUserRole === 'SECONDARY_CLUB_MANAGER' ? 'Secondary Club Manager' : 'Session Manager View')}
+                </span>
               </span>
               <p className="text-[11px] text-slate-500 mt-1">
-                {currentUserRole === 'CLUB_MANAGER'
-                  ? 'Only Club Managers have rights to add or remove session managers.'
-                  : 'Only the Club Manager has rights to add new session managers.'}
+                {isFullManager
+                  ? 'Club Managers (Primary & Secondary) have rights to add or remove managers.'
+                  : 'Session Managers have view rights for assigned sessions.'}
               </p>
             </div>
           </div>
@@ -1167,7 +1179,7 @@ export const SessionsManagementScreen: React.FC<SessionsManagementScreenProps> =
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-400">
-                Session Managers ({sessionManagers.length})
+                Club & Session Managers ({sessionManagers.length})
               </h3>
               <div className="relative min-w-[200px]">
                 <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -1196,27 +1208,19 @@ export const SessionsManagementScreen: React.FC<SessionsManagementScreenProps> =
                       <p className="text-[11px] text-slate-400">{manager.email || 'No email provided'}</p>
                       <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
                         <span className={`inline-block text-[9px] font-bold px-1.5 py-0.2 rounded border uppercase ${
-                          manager.inviteStatus === 'EMAIL_SENT'
-                            ? 'bg-sky-500/20 text-sky-400 border-sky-500/30'
-                            : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                          manager.role === 'SECONDARY_CLUB_MANAGER'
+                            ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40'
+                            : 'bg-slate-800 text-slate-300 border-slate-700'
                         }`}>
-                          {manager.inviteStatus === 'EMAIL_SENT' ? 'Password Reset Sent' : manager.inviteStatus}
+                          {manager.role === 'SECONDARY_CLUB_MANAGER' ? 'Secondary Club Manager' : 'Session Manager'}
                         </span>
-                        {(manager.authUid || manager.uid) && (
-                          <span 
-                            className="inline-block text-[9px] font-mono font-medium px-1.5 py-0.2 rounded border bg-slate-800 text-slate-300 border-slate-700"
-                            title={`Firebase Auth UID: ${manager.authUid || manager.uid}`}
-                          >
-                            UID: {(manager.authUid || manager.uid)!.slice(0, 8)}...
-                          </span>
-                        )}
                       </div>
                     </div>
                   </div>
 
                   <div className="flex items-center gap-2 self-end sm:self-auto">
-                    {/* Resend Password Reset button (Club manager only) */}
-                    {currentUserRole === 'CLUB_MANAGER' && manager.email && (
+                    {/* Resend Password Reset button (Club managers only) */}
+                    {isFullManager && manager.email && (
                       <button
                         type="button"
                         disabled={resendingManagerId === manager.id}
@@ -1233,8 +1237,8 @@ export const SessionsManagementScreen: React.FC<SessionsManagementScreenProps> =
                       </button>
                     )}
 
-                    {/* Remove manager (Club manager only) */}
-                    {currentUserRole === 'CLUB_MANAGER' && (
+                    {/* Remove manager (Club managers only) */}
+                    {isFullManager && (
                       <button
                         type="button"
                         onClick={() => setManagerToDelete(manager)}
@@ -1413,7 +1417,7 @@ export const SessionsManagementScreen: React.FC<SessionsManagementScreenProps> =
       {/* ========================================================= */}
       {/* POPUP: NEW WEEKLY SESSION (Requirement #4) */}
       {/* ========================================================= */}
-      {showAddWeeklyModal && (
+      {showAddWeeklyModal && isFullManager && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
@@ -1620,8 +1624,8 @@ export const SessionsManagementScreen: React.FC<SessionsManagementScreenProps> =
               {/* Target Score */}
               <div className="space-y-1.5">
                 <label className="text-xs font-bold text-slate-300">Target Score</label>
-                <div className="grid grid-cols-4 gap-2">
-                  {[11, 15, 21, 30].map((score) => (
+                <div className="grid grid-cols-2 gap-2">
+                  {[15, 21].map((score) => (
                     <button
                       key={score}
                       type="button"
@@ -1958,14 +1962,14 @@ export const SessionsManagementScreen: React.FC<SessionsManagementScreenProps> =
         </div>
       )}
 
-      {/* POPUP: ADD SESSION MANAGER */}
-      {showAddManagerModal && currentUserRole === 'CLUB_MANAGER' && (
+      {/* POPUP: ADD MANAGER (PRIMARY OR SECONDARY) */}
+      {showAddManagerModal && isFullManager && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-sm w-full p-6 shadow-2xl space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2">
                 <Shield className="w-4 h-4 text-sky-400" />
-                <span>Add Session Manager</span>
+                <span>Add Manager Account</span>
               </h3>
               <button
                 type="button"
@@ -1977,13 +1981,46 @@ export const SessionsManagementScreen: React.FC<SessionsManagementScreenProps> =
             </div>
 
             <div className="p-3 bg-sky-500/10 border border-sky-500/20 rounded-xl space-y-1">
-              <p className="text-xs font-bold text-sky-300">Manager Login & Permissions</p>
+              <p className="text-xs font-bold text-sky-300">Firebase Authentication & Password Reset</p>
               <p className="text-[11px] text-slate-300">
-                A login will be created for the manager and a password reset email will be sent automatically. The session manager will only be able to see and manage sessions to which they are assigned.
+                An entry will be created on Firebase authentication for this email and a password reset email will be sent automatically.
               </p>
             </div>
 
             <form onSubmit={handleCreateManager} className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-300">Manager Role *</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setNewManagerRole('SESSION_MANAGER')}
+                    className={`py-2 px-2.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                      newManagerRole === 'SESSION_MANAGER'
+                        ? 'bg-sky-500/20 border-sky-500 text-sky-300'
+                        : 'bg-slate-950 border-slate-800 text-slate-400'
+                    }`}
+                  >
+                    Session Manager
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNewManagerRole('SECONDARY_CLUB_MANAGER')}
+                    className={`py-2 px-2.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                      newManagerRole === 'SECONDARY_CLUB_MANAGER'
+                        ? 'bg-indigo-500/20 border-indigo-500 text-indigo-300'
+                        : 'bg-slate-950 border-slate-800 text-slate-400'
+                    }`}
+                  >
+                    Secondary Club Manager
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-400 mt-1">
+                  {newManagerRole === 'SECONDARY_CLUB_MANAGER'
+                    ? 'Secondary Club Managers hold full administrative rights similar to Primary Club Manager.'
+                    : 'Session Managers have access only to assigned weekly or adhoc sessions.'}
+                </p>
+              </div>
+
               <div className="space-y-1.5">
                 <label className="text-xs font-bold text-slate-300">Manager Name *</label>
                 <input
@@ -2071,7 +2108,7 @@ export const SessionsManagementScreen: React.FC<SessionsManagementScreenProps> =
         </div>
       )}
 
-      {weeklyToDelete && (
+      {weeklyToDelete && isFullManager && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-sm w-full p-6 shadow-2xl space-y-4">
             <h3 className="text-base font-bold text-slate-100 flex items-center gap-2">

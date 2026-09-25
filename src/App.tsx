@@ -34,20 +34,23 @@ import {
   loadClubFromRealtime,
   saveClubStateToLocal,
   loadClubStateFromLocal,
-  UserClubAssociation
+  UserClubAssociation,
+  syncScoreAuditLogToRealtime
 } from './lib/firebase';
 import type { 
   ClubEntity, 
-  PlayerEntity, 
   SessionEntity, 
-  SessionPlayerJoinEntity, 
   CourtEntity, 
-  CourtMasterEntity, 
-  SessionManagerEntity, 
+  PlayerEntity, 
+  SessionPlayerJoinEntity, 
   MatchEntity, 
   WeeklySessionEntity,
+  SessionManagerEntity,
+  CourtMasterEntity,
   GameType,
-  Gender
+  Gender,
+  ManagerRole,
+  ScoreAuditLogEntity
 } from './types';
 import { FairMatchAllocation, soundEngine, isMatchValidAndCounted } from './utils/badmintonLogic';
 
@@ -76,7 +79,7 @@ export const App: React.FC = () => {
   const [sessions, setSessions] = useState<SessionEntity[]>([]);
 
   // User Role & Permissions (RBAC)
-  const [currentUserRole, setCurrentUserRole] = useState<'CLUB_MANAGER' | 'SESSION_MANAGER'>('CLUB_MANAGER');
+  const [currentUserRole, setCurrentUserRole] = useState<ManagerRole>('CLUB_MANAGER');
   const [currentManagerId, setCurrentManagerId] = useState<number | null>(null);
   const [currentManagerName, setCurrentManagerName] = useState<string | null>(null);
   
@@ -89,6 +92,7 @@ export const App: React.FC = () => {
   const [allCourtsMap, setAllCourtsMap] = useState<Record<number, CourtEntity[]>>({});
   const [allMatchesMap, setAllMatchesMap] = useState<Record<number, MatchEntity[]>>({});
   const [allJoinsMap, setAllJoinsMap] = useState<Record<number, SessionPlayerJoinEntity[]>>({});
+  const [allAuditLogsMap, setAllAuditLogsMap] = useState<Record<number, ScoreAuditLogEntity[]>>({});
 
   // Theme & UI state
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
@@ -125,15 +129,20 @@ export const App: React.FC = () => {
 
     const unsubAuth = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
+      const activeSessionEmail = sessionStorage.getItem('badminton_session_user');
+      const activeSessionClubId = sessionStorage.getItem('badminton_session_club_id');
+
       if (user && user.email && activeSessionEmail && activeSessionClubId) {
         // Active session exists in this browser session
         setCurrentClubId(activeSessionClubId);
-      } else if (user && user.email && activeSessionEmail) {
+      } else if (user && user.email) {
         try {
           const userClubs = await findClubsForUser(user.email, user.uid);
-          if (userClubs.length > 0 && userClubs[0].clubId) {
-            setCurrentClubId(userClubs[0].clubId);
-            sessionStorage.setItem('badminton_session_club_id', userClubs[0].clubId);
+          if (userClubs.length > 0) {
+            const targetClubId = activeSessionClubId || userClubs[0].clubId;
+            setCurrentClubId(targetClubId);
+            sessionStorage.setItem('badminton_session_user', user.email);
+            sessionStorage.setItem('badminton_session_club_id', targetClubId);
           }
         } catch (err) {
           console.warn('[RTDB Auth] Error resolving user club index:', err);
@@ -290,6 +299,7 @@ export const App: React.FC = () => {
           setAllCourtsMap(parsed.allCourtsMap || {});
           setAllMatchesMap(parsed.allMatchesMap || {});
           setAllJoinsMap(parsed.allJoinsMap || {});
+          setAllAuditLogsMap(parsed.allAuditLogsMap || {});
 
           // Active session subcollections
           const currActive = parsed.sessions?.find((s) => s.isActive || s.status === 'Active' || s.status === 'Setting Up');
@@ -321,6 +331,7 @@ export const App: React.FC = () => {
         setAllCourtsMap({});
         setAllMatchesMap({});
         setAllJoinsMap({});
+        setAllAuditLogsMap({});
         loadedClubIdRef.current = currentClubId;
         setIsRealtimeConnected(true);
       }
@@ -337,11 +348,31 @@ export const App: React.FC = () => {
     };
   }, [currentClubId, clearClubState]);
 
+  // Requirement: 4-Hour Session Auto-End Engine
+  useEffect(() => {
+    if (!currentClubId || sessions.length === 0) return;
+    const checkFourHourLimit = () => {
+      const now = Date.now();
+      const FOUR_HOURS_MS = 4 * 60 * 60 * 1000; // 14,400,000 milliseconds (4 hours)
+      const runningSessions = sessions.filter((s) => s.status !== 'End');
+      runningSessions.forEach((s) => {
+        const start = s.startTime || s.createdAt || s.id;
+        if (start && (now - start >= FOUR_HOURS_MS)) {
+          console.log(`[Auto-End 4-Hour Rule]: Session #${s.id} (${s.name}) has been running for > 4 hours. Ending session.`);
+          handleEndActiveSession(s.id);
+        }
+      });
+    };
+    checkFourHourLimit();
+    const interval = setInterval(checkFourHourLimit, 10000);
+    return () => clearInterval(interval);
+  }, [currentClubId, sessions]);
+
   // 3. User Role & Manager Resolution
   useEffect(() => {
     const activeEmail = currentUser?.email || sessionStorage.getItem('badminton_session_user');
     if (!activeEmail || !clubDetails) {
-      const savedRole = sessionStorage.getItem('badminton_session_role') as 'CLUB_MANAGER' | 'SESSION_MANAGER' | null;
+      const savedRole = sessionStorage.getItem('badminton_session_role') as ManagerRole | null;
       if (savedRole) setCurrentUserRole(savedRole);
       return;
     }
@@ -363,15 +394,16 @@ export const App: React.FC = () => {
         (currentUser?.uid && (m.authUid === currentUser.uid || m.uid === currentUser.uid))
       );
       if (matched) {
-        setCurrentUserRole('SESSION_MANAGER');
+        const roleVal: ManagerRole = (matched.role as ManagerRole) || 'SESSION_MANAGER';
+        setCurrentUserRole(roleVal);
         setCurrentManagerId(matched.id);
         setCurrentManagerName(matched.name);
-        sessionStorage.setItem('badminton_session_role', 'SESSION_MANAGER');
+        sessionStorage.setItem('badminton_session_role', roleVal);
         sessionStorage.setItem('badminton_session_manager_id', String(matched.id));
       } else {
-        const savedRole = sessionStorage.getItem('badminton_session_role') as 'CLUB_MANAGER' | 'SESSION_MANAGER' | null;
-        if (savedRole === 'SESSION_MANAGER') {
-          setCurrentUserRole('SESSION_MANAGER');
+        const savedRole = sessionStorage.getItem('badminton_session_role') as ManagerRole | null;
+        if (savedRole) {
+          setCurrentUserRole(savedRole);
           const savedId = sessionStorage.getItem('badminton_session_manager_id');
           if (savedId) setCurrentManagerId(Number(savedId));
         } else {
@@ -448,22 +480,21 @@ export const App: React.FC = () => {
         sessionStorage.setItem('badminton_session_user', cleanEmail);
         sessionStorage.setItem('badminton_session_club_id', target.clubId);
         
-        if (target.role === 'SESSION_MANAGER') {
-          setCurrentUserRole('SESSION_MANAGER');
-          if (target.managerId != null) {
-            setCurrentManagerId(target.managerId);
-            sessionStorage.setItem('badminton_session_manager_id', String(target.managerId));
-          }
-          if (target.managerName) setCurrentManagerName(target.managerName);
-          sessionStorage.setItem('badminton_session_role', 'SESSION_MANAGER');
+        const roleVal: ManagerRole = (target.role as ManagerRole) || 'CLUB_MANAGER';
+        setCurrentUserRole(roleVal);
+        if (roleVal === 'SESSION_MANAGER' && target.managerId != null) {
+          setCurrentManagerId(target.managerId);
+          sessionStorage.setItem('badminton_session_manager_id', String(target.managerId));
         } else {
-          setCurrentUserRole('CLUB_MANAGER');
           setCurrentManagerId(null);
-          sessionStorage.setItem('badminton_session_role', 'CLUB_MANAGER');
           sessionStorage.removeItem('badminton_session_manager_id');
         }
+        if (target.managerName) setCurrentManagerName(target.managerName);
+        sessionStorage.setItem('badminton_session_role', roleVal);
 
-        const roleLabel = target.role === 'CLUB_MANAGER' ? 'Club Manager' : 'Session Manager';
+        if (activeTab === 'SETUP') setActiveTab('CLUB');
+
+        const roleLabel = target.role === 'SECONDARY_CLUB_MANAGER' ? 'Secondary Club Manager' : (target.role === 'CLUB_MANAGER' ? 'Club Manager' : 'Session Manager');
         return { success: true, message: `Signed in! Loaded ${target.clubName} as ${roleLabel}.` };
       } else if (clubs.length > 1) {
         sessionStorage.setItem('badminton_session_user', cleanEmail);
@@ -498,19 +529,20 @@ export const App: React.FC = () => {
     sessionStorage.setItem('badminton_session_user', assoc.email);
     sessionStorage.setItem('badminton_session_club_id', assoc.clubId);
 
-    if (assoc.role === 'SESSION_MANAGER') {
-      setCurrentUserRole('SESSION_MANAGER');
-      if (assoc.managerId != null) {
-        setCurrentManagerId(assoc.managerId);
-        sessionStorage.setItem('badminton_session_manager_id', String(assoc.managerId));
-      }
-      if (assoc.managerName) setCurrentManagerName(assoc.managerName);
-      sessionStorage.setItem('badminton_session_role', 'SESSION_MANAGER');
+    const roleVal: ManagerRole = (assoc.role as ManagerRole) || 'CLUB_MANAGER';
+    setCurrentUserRole(roleVal);
+    if ((roleVal === 'SESSION_MANAGER' || roleVal === 'SECONDARY_CLUB_MANAGER') && assoc.managerId != null) {
+      setCurrentManagerId(assoc.managerId);
+      sessionStorage.setItem('badminton_session_manager_id', String(assoc.managerId));
     } else {
-      setCurrentUserRole('CLUB_MANAGER');
       setCurrentManagerId(null);
-      sessionStorage.setItem('badminton_session_role', 'CLUB_MANAGER');
       sessionStorage.removeItem('badminton_session_manager_id');
+    }
+    if (assoc.managerName) setCurrentManagerName(assoc.managerName);
+    sessionStorage.setItem('badminton_session_role', roleVal);
+
+    if (activeTab === 'SETUP') {
+      setActiveTab('CLUB');
     }
   };
 
@@ -743,9 +775,13 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleAddSessionManager = async (name: string, email: string) => {
-    if (currentUserRole !== 'CLUB_MANAGER') {
-      return { success: false, message: 'Permission denied: Only Club Managers can add new session managers.' };
+  const handleAddSessionManager = async (
+    name: string, 
+    email: string, 
+    role: ManagerRole = 'SESSION_MANAGER'
+  ) => {
+    if (currentUserRole !== 'CLUB_MANAGER' && currentUserRole !== 'SECONDARY_CLUB_MANAGER') {
+      return { success: false, message: 'Permission denied: Only Club Managers can add new managers.' };
     }
     if (!currentClubId) return { success: false, message: 'No club selected' };
     const cleanEmail = email.trim();
@@ -763,6 +799,7 @@ export const App: React.FC = () => {
       id: nextId,
       name: name.trim(),
       email: cleanEmail,
+      role,
       authUid: assignedUid,
       uid: assignedUid,
       inviteStatus: 'EMAIL_SENT',
@@ -772,13 +809,14 @@ export const App: React.FC = () => {
     // Optimistic state update
     setSessionManagers((prev) => [...prev, newManager]);
 
-    // Realtime Database: persist manager with its Authentication UID
+    // Realtime Database: persist manager with its Authentication UID & role
     try {
       const smRef = ref(rtdb, `clubs/${currentClubId}/session_managers/manager_${nextId}`);
       await setRtdb(smRef, {
         id: `manager_${nextId}`,
         name: name.trim(),
         email: cleanEmail,
+        role,
         authUid: assignedUid ?? null,
         uid: assignedUid ?? null,
         inviteStatus: 'EMAIL_SENT',
@@ -788,13 +826,13 @@ export const App: React.FC = () => {
       console.warn('RTDB add manager note:', e);
     }
 
-    // Index in user_club_index with UID association
+    // Index in user_club_index with UID association & role
     try {
       await registerUserClubAssociation({
         email: cleanEmail,
         clubId: currentClubId,
         clubName: clubDetails?.name || 'Badminton Club',
-        role: 'SESSION_MANAGER',
+        role: role,
         managerId: nextId,
         managerName: name.trim(),
         ownerUid: assignedUid ?? null,
@@ -809,8 +847,8 @@ export const App: React.FC = () => {
   };
 
   const handleResendPasswordReset = async (managerId: number, email: string) => {
-    if (currentUserRole !== 'CLUB_MANAGER') {
-      return { success: false, message: 'Permission denied: Only Club Managers can manage session manager credentials.' };
+    if (currentUserRole !== 'CLUB_MANAGER' && currentUserRole !== 'SECONDARY_CLUB_MANAGER') {
+      return { success: false, message: 'Permission denied: Only Club Managers can manage manager credentials.' };
     }
     const cleanEmail = email.trim();
     if (!cleanEmail) return { success: false, message: 'Email address is required' };
@@ -831,7 +869,7 @@ export const App: React.FC = () => {
   };
 
   const handleDeleteSessionManager = async (managerId: number) => {
-    if (currentUserRole !== 'CLUB_MANAGER') return;
+    if (currentUserRole !== 'CLUB_MANAGER' && currentUserRole !== 'SECONDARY_CLUB_MANAGER') return;
     if (!currentClubId) return;
     const targetManager = sessionManagers.find((m) => m.id === managerId);
 
@@ -877,10 +915,10 @@ export const App: React.FC = () => {
       type,
       targetScore,
       createdAt: Date.now(),
-      isActive: true,
-      startTime: Date.now(),
+      isActive: false,
+      startTime: null,
       endTime: null,
-      status: 'Active',
+      status: 'Setting Up',
       weeklySessionId: null,
       managerId,
       managerName: mgr1?.name,
@@ -921,32 +959,6 @@ export const App: React.FC = () => {
     await syncSessionStateToRealtime(currentClubId, newSession, courtEntities, joinEntities, []);
 
     setActiveTab('LIVE');
-
-    // Auto-generate initial matches for courts
-    setTimeout(async () => {
-      let currentMatches: MatchEntity[] = [];
-      for (const court of courtEntities) {
-        const generated = FairMatchAllocation.generateMatchForCourt(
-          nextSessionId,
-          court.id,
-          court.gameType,
-          players,
-          joinEntities,
-          currentMatches,
-          courtEntities
-        );
-        if (generated) {
-          const matchId = currentMatches.length + 1;
-          const matchEntity: MatchEntity = { ...generated, id: matchId };
-          currentMatches = [...currentMatches, matchEntity];
-          await syncMatchToRealtime(currentClubId, nextSessionId, matchEntity);
-        }
-      }
-      if (currentMatches.length > 0) {
-        setActiveMatches(currentMatches);
-        setAllMatchesMap((prev) => ({ ...prev, [nextSessionId]: currentMatches }));
-      }
-    }, 100);
   };
 
   // Instantiate Weekly Session
@@ -960,10 +972,10 @@ export const App: React.FC = () => {
       type: weeklySession.type,
       targetScore: weeklySession.targetScore || clubDetails?.targetScore || 21,
       createdAt: Date.now(),
-      isActive: true,
-      startTime: Date.now(),
+      isActive: false,
+      startTime: null,
       endTime: null,
-      status: 'Active',
+      status: 'Setting Up',
       weeklySessionId: weeklySession.id,
       managerId: weeklySession.managerId,
       managerName: weeklySession.managerName,
@@ -1017,32 +1029,6 @@ export const App: React.FC = () => {
     await syncSessionStateToRealtime(currentClubId, newSession, courtEntities, joinEntities, []);
 
     setActiveTab('LIVE');
-
-    // Auto-generate initial matches for courts
-    setTimeout(async () => {
-      let currentMatches: MatchEntity[] = [];
-      for (const court of courtEntities) {
-        const generated = FairMatchAllocation.generateMatchForCourt(
-          nextSessionId,
-          court.id,
-          court.gameType,
-          players,
-          joinEntities,
-          currentMatches,
-          courtEntities
-        );
-        if (generated) {
-          const matchId = currentMatches.length + 1;
-          const matchEntity: MatchEntity = { ...generated, id: matchId };
-          currentMatches = [...currentMatches, matchEntity];
-          await syncMatchToRealtime(currentClubId, nextSessionId, matchEntity);
-        }
-      }
-      if (currentMatches.length > 0) {
-        setActiveMatches(currentMatches);
-        setAllMatchesMap((prev) => ({ ...prev, [nextSessionId]: currentMatches }));
-      }
-    }, 100);
   };
 
   const handleConvertPAYGToPermanent = async (playerId: number) => {
@@ -1141,36 +1127,45 @@ export const App: React.FC = () => {
   };
 
   const handleDeleteSession = async (sessionId: number) => {
-    if (!currentClubId) return;
-    // Optimistic state update
-    setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+    if (!currentClubId || currentUserRole !== 'CLUB_MANAGER') return;
+    const now = Date.now();
+    const deleterName = currentManagerName || currentUser?.displayName || currentUser?.email || 'Primary Club Manager';
+
+    // Soft delete optimistic update
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.id === sessionId
+          ? { ...s, isDeleted: true, status: 'End', isActive: false, deletedAt: now, deletedBy: deleterName }
+          : s
+      )
+    );
+
     if (activeSession?.id === sessionId) {
       setActiveCourts([]);
       setActiveJoins([]);
       setActiveMatches([]);
     }
-    setAllCourtsMap((prev) => {
-      const next = { ...prev };
-      delete next[sessionId];
-      return next;
-    });
-    setAllMatchesMap((prev) => {
-      const next = { ...prev };
-      delete next[sessionId];
-      return next;
-    });
-    setAllJoinsMap((prev) => {
-      const next = { ...prev };
-      delete next[sessionId];
-      return next;
-    });
 
-    // Realtime Database
+    // Realtime Database soft delete persistence
     try {
-      const sRefRtdb = ref(rtdb, `clubs/${currentClubId}/sessions/session_${sessionId}`);
-      await removeRtdb(sRefRtdb);
+      const sessRef = ref(rtdb, `clubs/${currentClubId}/sessions/session_${sessionId}`);
+      await updateRtdb(sessRef, {
+        isDeleted: true,
+        isActive: false,
+        status: 'End',
+        deletedAt: now,
+        deletedBy: deleterName
+      });
+      const sessInfoRef = ref(rtdb, `clubs/${currentClubId}/sessions/session_${sessionId}/info`);
+      await updateRtdb(sessInfoRef, {
+        isDeleted: true,
+        isActive: false,
+        status: 'End',
+        deletedAt: now,
+        deletedBy: deleterName
+      });
     } catch (e) {
-      console.warn('RTDB delete session note:', e);
+      console.warn('RTDB soft delete session note:', e);
     }
   };
 
@@ -1358,6 +1353,119 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleEditMatchScore = async (
+    matchId: number,
+    newTeamAScore: number,
+    newTeamBScore: number,
+    newWinnerTeam: 'A' | 'B'
+  ) => {
+    if (!activeSession || !currentClubId) return;
+
+    const targetMatch = activeMatches.find((m) => m.id === matchId);
+    if (!targetMatch) return;
+
+    const oldTeamAScore = targetMatch.teamAScore ?? 0;
+    const oldTeamBScore = targetMatch.teamBScore ?? 0;
+    const oldWinnerTeam = targetMatch.winnerTeam || 'A';
+
+    const now = Date.now();
+    const updaterName = currentManagerName || currentUser?.displayName || currentUser?.email || 'Manager';
+    const updaterEmail = currentUser?.email || '';
+    const updaterUid = currentUser?.uid || 'unknown_uid';
+
+    const updatedMatch: MatchEntity = {
+      ...targetMatch,
+      teamAScore: newTeamAScore,
+      teamBScore: newTeamBScore,
+      winnerTeam: newWinnerTeam,
+      isEdited: true,
+      lastEditedAt: now,
+      lastEditedBy: updaterName
+    };
+
+    const getPlayerName = (pid: number | null) => {
+      if (!pid) return '';
+      return players.find((p) => p.id === pid)?.name || `Player #${pid}`;
+    };
+
+    const teamAP1 = getPlayerName(targetMatch.teamAPlayer1Id);
+    const teamAP2 = getPlayerName(targetMatch.teamAPlayer2Id);
+    const teamBP1 = getPlayerName(targetMatch.teamBPlayer1Id);
+    const teamBP2 = getPlayerName(targetMatch.teamBPlayer2Id);
+
+    const teamAPlayersStr = [teamAP1, teamAP2].filter(Boolean).join(' & ');
+    const teamBPlayersStr = [teamBP1, teamBP2].filter(Boolean).join(' & ');
+
+    const courtObj = activeCourts.find((c) => c.id === targetMatch.courtId);
+    const courtName = courtObj?.name || `Court ${targetMatch.courtId}`;
+
+    const weeklySessionObj = activeSession.weeklySessionId
+      ? weeklySessions.find((w) => w.id === activeSession.weeklySessionId)
+      : null;
+
+    const sessionDateStr = activeSession.startTime
+      ? new Date(activeSession.startTime).toISOString().split('T')[0]
+      : new Date().toISOString().split('T')[0];
+
+    const logId = `log_${now}_${Math.random().toString(36).substring(2, 7)}`;
+    const auditLog: ScoreAuditLogEntity = {
+      id: logId,
+      matchId: targetMatch.id,
+      matchNumber: targetMatch.matchNumber,
+      sessionId: activeSession.id,
+      sessionName: activeSession.name,
+      weeklySessionId: activeSession.weeklySessionId || null,
+      weeklySessionName: weeklySessionObj?.name || null,
+      sessionDate: sessionDateStr,
+      courtName,
+      teamAPlayers: teamAPlayersStr,
+      teamBPlayers: teamBPlayersStr,
+      oldTeamAScore,
+      oldTeamBScore,
+      oldWinnerTeam,
+      newTeamAScore,
+      newTeamBScore,
+      newWinnerTeam,
+      scoreChangeSummary: `Score changed from (${oldTeamAScore} - ${oldTeamBScore}) to (${newTeamAScore} - ${newTeamBScore})`,
+      updatedByUid: updaterUid,
+      updatedByName: updaterName,
+      updatedByEmail: updaterEmail,
+      updatedByRole: currentUserRole,
+      timestamp: now
+    };
+
+    // Optimistic UI updates
+    setActiveMatches((prev) =>
+      prev.map((m) => (m.id === matchId ? updatedMatch : m))
+    );
+    setAllMatchesMap((prev) => ({
+      ...prev,
+      [activeSession.id]: (prev[activeSession.id] || []).map((m) =>
+        m.id === matchId ? updatedMatch : m
+      )
+    }));
+    setAllAuditLogsMap((prev) => ({
+      ...prev,
+      [activeSession.id]: [auditLog, ...(prev[activeSession.id] || [])]
+    }));
+
+    // Persist to Realtime Database
+    try {
+      const mRef = ref(rtdb, `clubs/${currentClubId}/sessions/session_${activeSession.id}/matches/match_${matchId}`);
+      await updateRtdb(mRef, {
+        teamAScore: newTeamAScore,
+        teamBScore: newTeamBScore,
+        winnerTeam: newWinnerTeam,
+        isEdited: true,
+        lastEditedAt: now,
+        lastEditedBy: updaterName
+      });
+      await syncScoreAuditLogToRealtime(currentClubId, activeSession.id, auditLog);
+    } catch (e) {
+      console.warn('RTDB edit match score note:', e);
+    }
+  };
+
   // Toggle Pause Player matching Android BadmintonRepository logic
   const handleTogglePlayerPause = async (playerId: number) => {
     if (!activeSession || !currentClubId) return;
@@ -1394,6 +1502,74 @@ export const App: React.FC = () => {
 
     // Sync to Realtime Database
     await syncSessionPlayerToRealtime(currentClubId, activeSession.id, updatedJoin);
+  };
+
+  const handlePairPlayers = async (player1Id: number, player2Id: number) => {
+    if (!activeSession || !currentClubId) return;
+
+    const p1Join = activeJoins.find((j) => j.playerId === player1Id);
+    const p2Join = activeJoins.find((j) => j.playerId === player2Id);
+    if (!p1Join || !p2Join) return;
+
+    const p1OldPartnerId = p1Join.pairedPartnerId;
+    const p2OldPartnerId = p2Join.pairedPartnerId;
+
+    const nextJoins = activeJoins.map((j) => {
+      if (j.playerId === player1Id) {
+        return { ...j, pairedPartnerId: player2Id };
+      }
+      if (j.playerId === player2Id) {
+        return { ...j, pairedPartnerId: player1Id };
+      }
+      if (p1OldPartnerId && j.playerId === p1OldPartnerId) {
+        return { ...j, pairedPartnerId: null };
+      }
+      if (p2OldPartnerId && j.playerId === p2OldPartnerId) {
+        return { ...j, pairedPartnerId: null };
+      }
+      return j;
+    });
+
+    setActiveJoins(nextJoins);
+    setAllJoinsMap((prev) => ({ ...prev, [activeSession.id]: nextJoins }));
+
+    const updatedP1 = nextJoins.find((j) => j.playerId === player1Id);
+    const updatedP2 = nextJoins.find((j) => j.playerId === player2Id);
+    if (updatedP1) await syncSessionPlayerToRealtime(currentClubId, activeSession.id, updatedP1);
+    if (updatedP2) await syncSessionPlayerToRealtime(currentClubId, activeSession.id, updatedP2);
+    if (p1OldPartnerId) {
+      const oldP1 = nextJoins.find((j) => j.playerId === p1OldPartnerId);
+      if (oldP1) await syncSessionPlayerToRealtime(currentClubId, activeSession.id, oldP1);
+    }
+    if (p2OldPartnerId) {
+      const oldP2 = nextJoins.find((j) => j.playerId === p2OldPartnerId);
+      if (oldP2) await syncSessionPlayerToRealtime(currentClubId, activeSession.id, oldP2);
+    }
+  };
+
+  const handleUnpairPlayers = async (playerId: number) => {
+    if (!activeSession || !currentClubId) return;
+    const join = activeJoins.find((j) => j.playerId === playerId);
+    if (!join) return;
+
+    const partnerId = join.pairedPartnerId;
+
+    const nextJoins = activeJoins.map((j) => {
+      if (j.playerId === playerId || (partnerId && j.playerId === partnerId)) {
+        return { ...j, pairedPartnerId: null };
+      }
+      return j;
+    });
+
+    setActiveJoins(nextJoins);
+    setAllJoinsMap((prev) => ({ ...prev, [activeSession.id]: nextJoins }));
+
+    const updatedJ1 = nextJoins.find((j) => j.playerId === playerId);
+    if (updatedJ1) await syncSessionPlayerToRealtime(currentClubId, activeSession.id, updatedJ1);
+    if (partnerId) {
+      const updatedJ2 = nextJoins.find((j) => j.playerId === partnerId);
+      if (updatedJ2) await syncSessionPlayerToRealtime(currentClubId, activeSession.id, updatedJ2);
+    }
   };
 
   // Add PAYG Player Walk-in with Late Arrival Calculation
@@ -1459,6 +1635,38 @@ export const App: React.FC = () => {
       teamBPlayer2Id: match.teamAPlayer2Id,
       teamAScore: match.teamBScore ?? 0,
       teamBScore: match.teamAScore ?? 0
+    };
+
+    // Optimistic UI update
+    setActiveMatches((prev) => prev.map((m) => (m.id === matchId ? updatedMatch : m)));
+    setAllMatchesMap((prev) => ({
+      ...prev,
+      [activeSession.id]: (prev[activeSession.id] || []).map((m) =>
+        m.id === matchId ? updatedMatch : m
+      )
+    }));
+
+    // Sync to RTDB
+    await syncMatchToRealtime(currentClubId, activeSession.id, updatedMatch);
+  };
+
+  const handleReplaceMatchPlayer = async (
+    matchId: number,
+    teamAPlayer1Id: number,
+    teamAPlayer2Id: number | null,
+    teamBPlayer1Id: number,
+    teamBPlayer2Id: number | null
+  ) => {
+    if (!activeSession || !currentClubId) return;
+    const match = activeMatches.find((m) => m.id === matchId);
+    if (!match) return;
+
+    const updatedMatch: MatchEntity = {
+      ...match,
+      teamAPlayer1Id,
+      teamAPlayer2Id,
+      teamBPlayer1Id,
+      teamBPlayer2Id
     };
 
     // Optimistic UI update
@@ -1547,7 +1755,7 @@ export const App: React.FC = () => {
       playerId,
       isPaused: false,
       eligibleCourtIds: null,
-      isPAYG: player?.isPAYG || false,
+      isPAYG: true, // Non-permanent member added to this live session is tagged as PAYG
       adjustedGames: lateArrivalAdjustment,
       pausedAtMatchCount: null
     };
@@ -1602,6 +1810,7 @@ export const App: React.FC = () => {
     playerIds: number[],
     courtNames: string[]
   ) => {
+    if (currentUserRole !== 'CLUB_MANAGER' && currentUserRole !== 'SECONDARY_CLUB_MANAGER') return;
     if (!currentClubId) return;
     const nextWSId = weeklySessions.length > 0 ? Math.max(...weeklySessions.map((w) => w.id)) + 1 : 1;
     const mgr1 = sessionManagers.find((m) => m.id === managerId);
@@ -1669,6 +1878,7 @@ export const App: React.FC = () => {
   };
 
   const handleDeleteWeeklySession = async (weeklyId: number) => {
+    if (currentUserRole !== 'CLUB_MANAGER' && currentUserRole !== 'SECONDARY_CLUB_MANAGER') return;
     if (!currentClubId) return;
     // Optimistic UI update
     setWeeklySessions((prev) => prev.filter((w) => w.id !== weeklyId));
@@ -1935,6 +2145,7 @@ export const App: React.FC = () => {
               onTogglePlayerPause={handleTogglePlayerPause}
               onAddPAYGPlayerToSession={handleAddPAYGPlayerToSession}
               onSwitchMatchPlayers={handleSwitchMatchPlayers}
+              onReplaceMatchPlayer={handleReplaceMatchPlayer}
               onAddCourtToSession={handleAddCourtToActiveSession}
               onDeleteCourtFromSession={handleDeleteCourtFromActiveSession}
               onUpdateCourtGameType={handleUpdateCourtGameType}
@@ -1944,6 +2155,10 @@ export const App: React.FC = () => {
               onAddPlayerToMaster={handleAddPlayer}
               onTogglePlayerPAYG={handleTogglePlayerPAYG}
               onNavigateToSessions={() => setActiveTab('CLUB')}
+              onEditMatchScore={handleEditMatchScore}
+              onPairPlayers={handlePairPlayers}
+              onUnpairPlayers={handleUnpairPlayers}
+              auditLogs={activeSession ? (allAuditLogsMap[activeSession.id] || []) : []}
             />
           )}
 
@@ -1955,7 +2170,9 @@ export const App: React.FC = () => {
               allMatchesMap={allMatchesMap}
               players={players}
               weeklySessions={visibleWeeklySessions}
-              onDeleteSession={handleDeleteSession}
+              currentUserRole={currentUserRole}
+              onDeleteSession={currentUserRole === 'CLUB_MANAGER' ? handleDeleteSession : undefined}
+              allAuditLogsMap={allAuditLogsMap}
             />
           )}
         </ErrorBoundary>
